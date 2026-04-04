@@ -413,7 +413,7 @@ export class GameScene extends Phaser.Scene {
 
     this.player.update(delta * playerTimeWarpMultiplier);
     this.recorder.record(this.player.x, this.player.y);
-    this.ghostManager.update(timeWarpMultiplier);
+    this.ghostManager.update(timeWarpMultiplier, delta);
 
     this.survivalTime = this.time.now - this.gameStartTime;
 

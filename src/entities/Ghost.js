@@ -12,6 +12,7 @@ export class Ghost {
     this._pulseAngle = Math.random() * Math.PI * 2;
     this._eyeFlicker = 0;
     this._warpSlowed = false;
+    this._loopFading = false;
 
     if (!this.path || this.path.length < 2) { this.alive = false; return; }
 
@@ -21,6 +22,12 @@ export class Ghost {
 
     this.graphics = scene.add.graphics().setDepth(18);
 
+    // ---- CRITICAL: delta-based path time ----
+    // We track _pathT as the current position IN THE RECORDED PATH (in ms).
+    // We increment it by (delta * multiplier) each frame — never compute it from absolute time.
+    // This means warp only slows future advancement, never jumps the ghost backwards.
+    this._pathT = this.path[0].t;
+
     // Fade in
     scene.tweens.add({
       targets: this,
@@ -29,15 +36,11 @@ export class Ghost {
       ease: 'Sine.easeOut'
     });
 
-    // Single clean spawn pulse (NO cascading delayedCalls to avoid frame spike)
+    // Single spawn pulse
     this._doSpawnPulse();
-
-    this.pathStartTime = scene.time.now;
-    this.pathOffset    = this.path[0].t;
   }
 
   _doSpawnPulse() {
-    // Single expanding ring — lightweight, one graphics object, one tween
     const pulse = this.scene.add.graphics().setDepth(17);
     pulse.lineStyle(2, CONFIG.GHOST_COLOR, 0.9);
     pulse.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
@@ -51,27 +54,46 @@ export class Ghost {
     });
   }
 
-  update(timeWarpMultiplier = 1) {
+  /**
+   * @param {number} timeWarpMultiplier  - 1 = normal, 0.2 = slow
+   * @param {number} delta               - frame delta in ms (from Phaser update)
+   */
+  update(timeWarpMultiplier = 1, delta = 16) {
     if (!this.alive || !this.path || this.path.length === 0) return;
 
     this._warpSlowed = timeWarpMultiplier < 0.5;
     this._pulseAngle += 0.05;
     this._eyeFlicker = Math.random();
 
-    const elapsed = (this.scene.time.now - this.pathStartTime) * timeWarpMultiplier;
-    const targetT = elapsed + this.pathOffset;
+    // Cap delta to 50ms — prevents huge jumps on lag frames (e.g. when a new ghost spawns)
+    const safeDelta = Math.min(delta, 50);
 
-    while (
-      this.pathIndex < this.path.length - 1 &&
-      this.path[this.pathIndex + 1].t <= targetT
-    ) {
-      this.pathIndex++;
-    }
+    // Advance path position by exactly (delta * multiplier) ms
+    this._pathT += safeDelta * timeWarpMultiplier;
 
-    if (this.pathIndex >= this.path.length - 1) {
+    // ---- PATH END / LOOP ----
+    const maxT = this.path[this.path.length - 1].t;
+    if (this._pathT >= maxT) {
       if (CONFIG.GHOST_LOOP_PATH) {
+        // Wrap: carry overflow forward so timing is smooth
+        const overflow = this._pathT - maxT;
+        this._pathT = this.path[0].t + Math.min(overflow, 100); // cap overflow
         this.pathIndex = 0;
-        this.pathStartTime = this.scene.time.now;
+        this.trailHistory = []; // clear trail — prevents rubber-band line from end→start
+
+        // Quick re-materialise flash instead of hard teleport
+        if (!this._loopFading) {
+          this._loopFading = true;
+          const prevAlpha = this.alpha;
+          this.alpha = 0.05;
+          this.scene.tweens.add({
+            targets: this,
+            alpha: prevAlpha,
+            duration: 350,
+            ease: 'Power2',
+            onComplete: () => { this._loopFading = false; }
+          });
+        }
       } else {
         this.alive = false;
         this.graphics.setVisible(false);
@@ -79,10 +101,19 @@ export class Ghost {
       }
     }
 
+    // ---- ADVANCE pathIndex to match _pathT ----
+    while (
+      this.pathIndex < this.path.length - 1 &&
+      this.path[this.pathIndex + 1].t <= this._pathT
+    ) {
+      this.pathIndex++;
+    }
+
+    // ---- INTERPOLATE position ----
     const curr  = this.path[this.pathIndex];
-    const next  = this.path[this.pathIndex + 1] || curr;
+    const next  = this.path[Math.min(this.pathIndex + 1, this.path.length - 1)];
     const span  = next.t - curr.t;
-    const lerpT = Phaser.Math.Clamp(span > 0 ? (targetT - curr.t) / span : 0, 0, 1);
+    const lerpT = span > 0 ? Phaser.Math.Clamp((this._pathT - curr.t) / span, 0, 1) : 0;
 
     this.x = Phaser.Math.Linear(curr.x, next.x, lerpT);
     this.y = Phaser.Math.Linear(curr.y, next.y, lerpT);
@@ -111,14 +142,14 @@ export class Ghost {
       this.graphics.fillCircle(pt.x, pt.y, this.radius * 0.75 * prog * tMult);
     });
 
-    // Chromatic aberration (lightweight: just 2 offset fills)
+    // Chromatic aberration (lightweight: 2 offset fills)
     const caOff = 2.5 + danger * 3.5;
     this.graphics.fillStyle(0xff0055, this.alpha * 0.1);
     this.graphics.fillCircle(this.x - caOff, this.y, this.radius * 0.9);
     this.graphics.fillStyle(0x00ccff, this.alpha * 0.1);
     this.graphics.fillCircle(this.x + caOff, this.y, this.radius * 0.9);
 
-    // Large far glow — illuminates area around ghost
+    // Far glow
     this.graphics.fillStyle(activeColor, this.alpha * (0.04 + danger * 0.06) + pulse * 0.02);
     this.graphics.fillCircle(this.x, this.y, 60 + danger * 30);
 
@@ -138,7 +169,7 @@ export class Ghost {
     this.graphics.fillStyle(eyeC, eyeA);
     this.graphics.fillCircle(this.x, this.y, this.radius * 0.2);
 
-    // Warp slow blue shimmer
+    // Warp slow shimmer
     if (this._warpSlowed) {
       this.graphics.fillStyle(0x002288, 0.18);
       this.graphics.fillCircle(this.x, this.y, this.radius * 2.2);

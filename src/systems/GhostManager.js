@@ -50,8 +50,8 @@ export class GhostManager {
     });
   }
 
-  update(timeWarpMultiplier = 1) {
-    this.ghosts.forEach(g => g.update(timeWarpMultiplier));
+  update(timeWarpMultiplier = 1, delta = 16) {
+    this.ghosts.forEach(g => g.update(timeWarpMultiplier, delta));
     // Remove dead ghosts
     this.ghosts = this.ghosts.filter(g => g.alive);
   }
