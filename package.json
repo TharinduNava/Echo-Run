@@ -31,8 +31,14 @@
     "publish": [ "github" ],
     "directories": { "output": "release/" },
     "mac": { "target": "dmg", "identity": null },
+    "linux": { "target": "AppImage" },
     "win": { "target": "nsis" },
-    "linux": { "target": "AppImage" }
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.png",
+      "uninstallerIcon": "build/icon.png"
+    }
   },
   "scripts": {
     "dev": "vite",
