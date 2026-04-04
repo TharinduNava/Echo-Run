@@ -4,6 +4,7 @@
   "description": "A Phaser survival game where your past movement paths become enemies.",
   "author": "Tharindu Hettige (https://github.com/TharinduNava)",
   "license": "MIT",
+  "main": "electron/main.js",
   "private": false,
   "repository": {
     "type": "git",
@@ -24,12 +25,26 @@
   "engines": {
     "node": ">=20"
   },
+  "build": {
+    "appId": "com.echorun.game",
+    "productName": "Echo Run",
+    "publish": [
+      "github"
+    ],
+    "directories": {
+      "output": "release/"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:start": "vite build && electron .",
+    "electron:build": "vite build && electron-builder"
   },
   "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^26.8.1",
     "vite": "^8.0.3"
   }
 }
