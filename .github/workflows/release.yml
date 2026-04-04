@@ -1,9 +1,10 @@
-name: Build and Release Electron App
-
 on:
   push:
     tags:
       - 'v*' # Trigger only on version tags like v1.0.0
+  release:
+    types: [published, created]
+  workflow_dispatch:
 
 permissions:
   contents: write
