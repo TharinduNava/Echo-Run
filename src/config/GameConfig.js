@@ -9,11 +9,13 @@ export const CONFIG = {
   PLAYER_RADIUS:      10,
   PLAYER_COLOR:       0x00f5ff,
 
-  // Ghost — increased delays so player has time to learn
-  GHOST_DELAY:        10000,     // 10s before first ghost
-  GHOST_INTERVAL:     9000,      // 9s between subsequent ghosts
-  GHOST_GRACE_MS:     1500,      // 1.5s invincibility after ghost spawns
-  MAX_GHOSTS:         12,
+  // Ghost progression
+  GHOST_DELAY:           10000,  // 10s before first ghost
+  GHOST_INTERVAL:         9000,  // base gap between ghosts
+  GHOST_MIN_INTERVAL:     3500,  // minimum gap
+  GHOST_GRACE_MS:         1500,  // invincibility window after spawn
+  MAX_GHOSTS:                8,  // cap — after 8 the arena is packed
+  GHOST_OVERDRIVE_COUNT:     5,  // ghost count that triggers OVERDRIVE warning
   GHOST_RADIUS:       10,
   GHOST_COLOR:        0xa855f7,
   GHOST_ALPHA:        0.7,

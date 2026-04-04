@@ -1,42 +1,44 @@
 import { CONFIG } from '../config/GameConfig.js';
 
+/**
+ * Ghost uses the LIVE recorder buffer (not a snapshot).
+ * It is always exactly `behindMs` milliseconds behind the current recording.
+ * This means it NEVER loops or resets — as the recording grows, the ghost
+ * always has new frames to advance into.
+ */
 export class Ghost {
-  constructor(scene, path) {
-    this.scene = scene;
-    this.path = path;
+  constructor(scene, recorder, behindMs) {
+    this.scene    = scene;
+    this.recorder = recorder;
+    this._behindMs = behindMs;
     this.pathIndex = 0;
-    this.alive = true;
-    this.alpha = 0;
+    this.alive     = true;
+    this.alpha     = 0;
     this._dangerIntensity = 0;
     this.trailHistory = [];
-    this._pulseAngle = Math.random() * Math.PI * 2;
-    this._eyeFlicker = 0;
-    this._warpSlowed = false;
-    this._loopFading = false;
-
-    if (!this.path || this.path.length < 2) { this.alive = false; return; }
-
-    this.x = this.path[0].x;
-    this.y = this.path[0].y;
+    this._pulseAngle  = Math.random() * Math.PI * 2;
+    this._eyeFlicker  = 0;
+    this._warpSlowed  = false;
     this.radius = CONFIG.GHOST_RADIUS;
+
+    const buf = recorder.buffer;
+    if (!buf || buf.length < 2) { this.alive = false; return; }
+
+    // Start _pathT at the correct position: current recording end - behindMs
+    const currentRecT = buf[buf.length - 1].t;
+    this._pathT = Math.max(buf[0].t, currentRecT - behindMs);
+
+    // Seek pathIndex
+    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
+      this.pathIndex++;
+    }
+
+    this.x = buf[this.pathIndex].x;
+    this.y = buf[this.pathIndex].y;
 
     this.graphics = scene.add.graphics().setDepth(18);
 
-    // ---- CRITICAL: delta-based path time ----
-    // We track _pathT as the current position IN THE RECORDED PATH (in ms).
-    // We increment it by (delta * multiplier) each frame — never compute it from absolute time.
-    // This means warp only slows future advancement, never jumps the ghost backwards.
-    this._pathT = this.path[0].t;
-
-    // Fade in
-    scene.tweens.add({
-      targets: this,
-      alpha: CONFIG.GHOST_ALPHA,
-      duration: CONFIG.GHOST_FADE_IN_MS,
-      ease: 'Sine.easeOut'
-    });
-
-    // Single spawn pulse
+    scene.tweens.add({ targets: this, alpha: CONFIG.GHOST_ALPHA, duration: CONFIG.GHOST_FADE_IN_MS, ease: 'Sine.easeOut' });
     this._doSpawnPulse();
   }
 
@@ -45,76 +47,46 @@ export class Ghost {
     pulse.lineStyle(2, CONFIG.GHOST_COLOR, 0.9);
     pulse.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
     this.scene.tweens.add({
-      targets: pulse,
-      scaleX: 6, scaleY: 6,
-      alpha: 0,
-      duration: 700,
-      ease: 'Power2.Out',
-      onComplete: () => pulse.destroy()
+      targets: pulse, scaleX: 5, scaleY: 5, alpha: 0,
+      duration: 600, ease: 'Power2.Out', onComplete: () => pulse.destroy()
     });
   }
 
-  /**
-   * @param {number} timeWarpMultiplier  - 1 = normal, 0.2 = slow
-   * @param {number} delta               - frame delta in ms (from Phaser update)
-   */
   update(timeWarpMultiplier = 1, delta = 16) {
-    if (!this.alive || !this.path || this.path.length === 0) return;
+    if (!this.alive) return;
 
-    this._warpSlowed = timeWarpMultiplier < 0.5;
+    const buf = this.recorder.buffer;
+    if (!buf || buf.length < 2) return;
+
+    this._warpSlowed  = timeWarpMultiplier < 0.5;
     this._pulseAngle += 0.05;
-    this._eyeFlicker = Math.random();
+    this._eyeFlicker  = Math.random();
 
-    // Cap delta to 50ms — prevents huge jumps on lag frames (e.g. when a new ghost spawns)
-    const safeDelta = Math.min(delta, 50);
-
-    // Advance path position by exactly (delta * multiplier) ms
+    // Advance path time — delta-based, no absolute-time math (warp-safe)
+    const safeDelta = Math.min(delta, 33);
     this._pathT += safeDelta * timeWarpMultiplier;
 
-    // ---- PATH END / LOOP ----
-    const maxT = this.path[this.path.length - 1].t;
-    if (this._pathT >= maxT) {
-      if (CONFIG.GHOST_LOOP_PATH) {
-        // Wrap: carry overflow forward so timing is smooth
-        const overflow = this._pathT - maxT;
-        this._pathT = this.path[0].t + Math.min(overflow, 100); // cap overflow
-        this.pathIndex = 0;
-        this.trailHistory = []; // clear trail — prevents rubber-band line from end→start
+    // Cap to current recording end (ghost can never go "into the future")
+    const maxRecT = buf[buf.length - 1].t;
+    const minRecT = buf[0].t;
+    if (this._pathT > maxRecT) this._pathT = maxRecT;
+    if (this._pathT < minRecT) this._pathT = minRecT;
 
-        // Quick re-materialise flash instead of hard teleport
-        if (!this._loopFading) {
-          this._loopFading = true;
-          const prevAlpha = this.alpha;
-          this.alpha = 0.05;
-          this.scene.tweens.add({
-            targets: this,
-            alpha: prevAlpha,
-            duration: 350,
-            ease: 'Power2',
-            onComplete: () => { this._loopFading = false; }
-          });
-        }
-      } else {
-        this.alive = false;
-        this.graphics.setVisible(false);
-        return;
-      }
+    // If pathIndex went out of range (buffer pruning), reset it
+    if (this.pathIndex >= buf.length || buf[this.pathIndex].t > this._pathT) {
+      this.pathIndex = 0;
     }
 
-    // ---- ADVANCE pathIndex to match _pathT ----
-    while (
-      this.pathIndex < this.path.length - 1 &&
-      this.path[this.pathIndex + 1].t <= this._pathT
-    ) {
+    // Advance pathIndex
+    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
       this.pathIndex++;
     }
 
-    // ---- INTERPOLATE position ----
-    const curr  = this.path[this.pathIndex];
-    const next  = this.path[Math.min(this.pathIndex + 1, this.path.length - 1)];
+    // Interpolate
+    const curr  = buf[this.pathIndex];
+    const next  = buf[Math.min(this.pathIndex + 1, buf.length - 1)];
     const span  = next.t - curr.t;
     const lerpT = span > 0 ? Phaser.Math.Clamp((this._pathT - curr.t) / span, 0, 1) : 0;
-
     this.x = Phaser.Math.Linear(curr.x, next.x, lerpT);
     this.y = Phaser.Math.Linear(curr.y, next.y, lerpT);
 
@@ -123,67 +95,63 @@ export class Ghost {
 
   draw() {
     this.graphics.clear();
-
+    const g      = this.graphics;
     const danger = this._dangerIntensity || 0;
     const pulse  = 0.5 + 0.5 * Math.sin(this._pulseAngle);
-    const dangerColor = 0xff3355;
-    const baseColor   = CONFIG.GHOST_COLOR;
-    const activeColor = danger > 0.5 ? dangerColor : baseColor;
+    const col    = danger > 0.5 ? 0xff3355 : CONFIG.GHOST_COLOR;
 
     // Trail
     this.trailHistory.push({ x: this.x, y: this.y });
     if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) this.trailHistory.shift();
-
     const tMult = this._warpSlowed ? 2.0 : 1;
     this.trailHistory.forEach((pt, i) => {
       const prog = (i + 1) / this.trailHistory.length;
-      const a = Math.pow(prog, 1.2) * 0.35 * this.alpha * tMult;
-      this.graphics.fillStyle(activeColor, Math.min(a, 0.7));
-      this.graphics.fillCircle(pt.x, pt.y, this.radius * 0.75 * prog * tMult);
+      g.fillStyle(col, Math.min(Math.pow(prog, 1.2) * 0.4 * this.alpha * tMult, 0.75));
+      g.fillCircle(pt.x, pt.y, this.radius * 0.8 * prog * tMult);
     });
 
-    // Chromatic aberration (lightweight: 2 offset fills)
-    const caOff = 2.5 + danger * 3.5;
-    this.graphics.fillStyle(0xff0055, this.alpha * 0.1);
-    this.graphics.fillCircle(this.x - caOff, this.y, this.radius * 0.9);
-    this.graphics.fillStyle(0x00ccff, this.alpha * 0.1);
-    this.graphics.fillCircle(this.x + caOff, this.y, this.radius * 0.9);
+    // 3D drop shadow
+    g.fillStyle(0x220033, this.alpha * 0.38);
+    g.fillEllipse(this.x + 3, this.y + 14, 26, 8);
 
-    // Far glow
-    this.graphics.fillStyle(activeColor, this.alpha * (0.04 + danger * 0.06) + pulse * 0.02);
-    this.graphics.fillCircle(this.x, this.y, 60 + danger * 30);
+    // Chromatic aberration
+    const ca = 2.5 + danger * 3.5;
+    g.fillStyle(0xff0055, this.alpha * 0.12); g.fillCircle(this.x - ca, this.y, this.radius * 0.95);
+    g.fillStyle(0x00ccff, this.alpha * 0.12); g.fillCircle(this.x + ca, this.y, this.radius * 0.95);
+
+    // Far glow (illuminates arena)
+    g.fillStyle(col, this.alpha * (0.035 + danger * 0.05) + pulse * 0.015);
+    g.fillCircle(this.x, this.y, 65 + danger * 35);
 
     // Mid glow
-    this.graphics.fillStyle(activeColor, this.alpha * (0.15 + danger * 0.4));
-    this.graphics.fillCircle(this.x, this.y, this.radius * 2.8 + danger * 8 + pulse * 2);
+    g.fillStyle(col, this.alpha * (0.18 + danger * 0.42));
+    g.fillCircle(this.x, this.y, this.radius * 3.0 + danger * 8 + pulse * 2.5);
 
-    // Core
-    this.graphics.fillStyle(activeColor, this.alpha);
-    this.graphics.fillCircle(this.x, this.y, this.radius);
+    // Core (3D sphere)
+    g.fillStyle(col, this.alpha);
+    g.fillCircle(this.x, this.y, this.radius);
+    g.fillStyle(0x220033, this.alpha * 0.5);
+    g.fillCircle(this.x + 2.5, this.y + 2.5, this.radius * 0.75); // shadow half
+    g.fillStyle(0xffffff, this.alpha * 0.3);
+    g.fillCircle(this.x - 2.5, this.y - 2.5, this.radius * 0.35); // specular
 
     // Void eye
     const eyeA = this.alpha * (0.4 + (danger > 0.3 ? this._eyeFlicker * 0.5 : 0));
     const eyeC = danger > 0.5 ? 0xff0000 : 0xffffff;
-    this.graphics.lineStyle(1, eyeC, eyeA * 0.8);
-    this.graphics.strokeCircle(this.x, this.y, this.radius * 0.52);
-    this.graphics.fillStyle(eyeC, eyeA);
-    this.graphics.fillCircle(this.x, this.y, this.radius * 0.2);
+    g.lineStyle(1, eyeC, eyeA * 0.8); g.strokeCircle(this.x, this.y, this.radius * 0.52);
+    g.fillStyle(eyeC, eyeA);           g.fillCircle(this.x, this.y, this.radius * 0.2);
 
-    // Warp slow shimmer
+    // Warp shimmer
     if (this._warpSlowed) {
-      this.graphics.fillStyle(0x002288, 0.18);
-      this.graphics.fillCircle(this.x, this.y, this.radius * 2.2);
-      this.graphics.lineStyle(1.5, 0x0066ff, 0.5);
-      this.graphics.strokeCircle(this.x, this.y, this.radius * 1.6);
+      g.fillStyle(0x001888, 0.2);   g.fillCircle(this.x, this.y, this.radius * 2.4);
+      g.lineStyle(1.5, 0x0066ff, 0.55); g.strokeCircle(this.x, this.y, this.radius * 1.7);
     }
   }
 
   setDangerIntensity(d) { this._dangerIntensity = Phaser.Math.Clamp(d, 0, 1); }
 
   flashDanger() {
-    const orig = this.alpha;
-    this.alpha = 1;
-    this._dangerIntensity = 1;
+    const orig = this.alpha; this.alpha = 1; this._dangerIntensity = 1;
     this.scene.time.delayedCall(120, () => { this.alpha = orig; this._dangerIntensity = 0; });
   }
 
