@@ -37,6 +37,7 @@ jobs:
 
       - name: Set Package Version from Git Tag
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           npm --no-git-tag-version version $VERSION
