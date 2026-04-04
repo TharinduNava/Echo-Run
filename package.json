@@ -35,6 +35,7 @@
   "build": {
     "appId": "com.echorun.game",
     "productName": "Echo Run",
+    "publish": ["github"],
     "directories": {
       "output": "release/"
     },
