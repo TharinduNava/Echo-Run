@@ -46,19 +46,19 @@ export class MenuScene extends Phaser.Scene {
     this._buildTitle(cx,cy);
 
     // Tagline
-    this._fade(this.add.text(cx,cy+26,'"Your past is your greatest enemy."',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#4a6080',align:'center'}).setOrigin(0.5).setDepth(10).setAlpha(0),900);
+    this._fade(this.add.text(cx,cy+26,'"Your past is your greatest enemy."',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#8ca2c0',align:'center'}).setOrigin(0.5).setDepth(10).setAlpha(0),900);
 
     // Controls
     this._fade(this.add.text(cx,cy+56,'WASD/ARROWS — MOVE   SHIFT — WARP   E — POWERUP   ESC — PAUSE',{
-      fontFamily:'Share Tech Mono, monospace',fontSize:'10px',color:'#334455',align:'center'
+      fontFamily:'Share Tech Mono, monospace',fontSize:'10px',color:'#7b94b5',align:'center'
     }).setOrigin(0.5).setDepth(10).setAlpha(0),1100);
 
     // ── Difficulty selector ───────────────────────────────
     this._diffGfx=this.add.graphics().setDepth(10);
     this._diffTexts={};
     const diffY=cy+100;
-    this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#334455'}).setOrigin(0.5).setDepth(10).setAlpha(0);
-    this._fade(this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#334455'}).setOrigin(0.5).setDepth(10).setAlpha(0),1200);
+    this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0);
+    this._fade(this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1200);
 
     const diffs=['easy','normal','hard','nightmare'];
     const diffW=90, startX=cx-((diffs.length-1)*diffW)/2;
@@ -67,10 +67,10 @@ export class MenuScene extends Phaser.Scene {
       const lbl=CONFIG.DIFFICULTIES[d].label;
       const btn=this.add.text(bx,by,lbl,{
         fontFamily:'Orbitron, monospace',fontSize:'11px',
-        color:d===this._difficulty?CONFIG.COLOR_CYAN:'#334455',align:'center'
+        color:d===this._difficulty?CONFIG.COLOR_CYAN:'#7b94b5',align:'center'
       }).setOrigin(0.5).setDepth(11).setAlpha(0).setInteractive({useHandCursor:true});
-      btn.on('pointerover',()=>{ if(d!==this._difficulty) btn.setColor('#556688'); });
-      btn.on('pointerout', ()=>{ btn.setColor(d===this._difficulty?CONFIG.COLOR_CYAN:'#334455'); });
+      btn.on('pointerover',()=>{ if(d!==this._difficulty) btn.setColor('#a8bddd'); });
+      btn.on('pointerout', ()=>{ btn.setColor(d===this._difficulty?CONFIG.COLOR_CYAN:'#7b94b5'); });
       btn.on('pointerdown',()=>{ this._setDifficulty(d); });
       this._diffTexts[d]=btn;
       this._fade(btn,1300+i*80);
@@ -80,7 +80,7 @@ export class MenuScene extends Phaser.Scene {
     const lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
     if(lb.length>0){
       const lbY=cy+158;
-      this._fade(this.add.text(cx,lbY,'TOP SCORES',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#334455'}).setOrigin(0.5).setDepth(10).setAlpha(0),1500);
+      this._fade(this.add.text(cx,lbY,'TOP SCORES',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1500);
       lb.slice(0,5).forEach((score,i)=>{
         const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:'#445566';
         this._fade(this.add.text(cx,lbY+16+i*16,`#${i+1}  ${(score/1000).toFixed(2)}s`,{
@@ -118,7 +118,7 @@ export class MenuScene extends Phaser.Scene {
     this._difficulty=d;
     localStorage.setItem('echorun_difficulty',d);
     Object.entries(this._diffTexts).forEach(([k,t])=>{
-      t.setColor(k===d?CONFIG.COLOR_CYAN:'#334455');
+      t.setColor(k===d?CONFIG.COLOR_CYAN:'#7b94b5');
     });
   }
 
