@@ -35,9 +35,7 @@
     "win": { "target": "nsis" },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "build/icon.png",
-      "uninstallerIcon": "build/icon.png"
+      "allowToChangeInstallationDirectory": true
     }
   },
   "scripts": {
