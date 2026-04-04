@@ -28,12 +28,11 @@
   "build": {
     "appId": "com.echorun.game",
     "productName": "Echo Run",
-    "publish": [
-      "github"
-    ],
-    "directories": {
-      "output": "release/"
-    }
+    "publish": [ "github" ],
+    "directories": { "output": "release/" },
+    "mac": { "target": "dmg", "identity": null },
+    "win": { "target": "nsis" },
+    "linux": { "target": "AppImage" }
   },
   "scripts": {
     "dev": "vite",
