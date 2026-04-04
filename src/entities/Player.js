@@ -10,6 +10,10 @@ export class Player {
     this.radius = CONFIG.PLAYER_RADIUS;
     this.alive = true;
     this.trailHistory = [];
+    this._pulseAngle = 0;
+    this._energyRingRadius = 0;
+    this._isMoving = false;
+    this._warpAura = false; // set externally during time warp
 
     // Bounds
     this.minX = CONFIG.ARENA_PADDING + this.radius;
@@ -37,7 +41,7 @@ export class Player {
   update(delta) {
     if (!this.alive) return;
 
-    const dt = delta / 1000; // convert ms to seconds
+    const dt = delta / 1000;
     let dx = 0;
     let dy = 0;
 
@@ -55,6 +59,7 @@ export class Player {
 
     this.vx = dx * CONFIG.PLAYER_SPEED;
     this.vy = dy * CONFIG.PLAYER_SPEED;
+    this._isMoving = (dx !== 0 || dy !== 0);
 
     this.x += this.vx * dt;
     this.y += this.vy * dt;
@@ -63,36 +68,66 @@ export class Player {
     this.x = Phaser.Math.Clamp(this.x, this.minX, this.maxX);
     this.y = Phaser.Math.Clamp(this.y, this.minY, this.maxY);
 
+    this._pulseAngle += 0.07;
+
     this.draw();
   }
 
   draw() {
     this.graphics.clear();
 
-    // Update trail history
+    // ----- TRAIL -----
     this.trailHistory.push({ x: this.x, y: this.y });
     if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) {
       this.trailHistory.shift();
     }
 
-    // Draw trail before core circle:
+    const trailLen = this.trailHistory.length;
     this.trailHistory.forEach((pt, i) => {
-      const progress = i / this.trailHistory.length;
-      const a = progress * 0.4;
-      const r = this.radius * 0.5 * progress;
+      const progress = i / trailLen;
+      const a = Math.pow(progress, 1.5) * 0.55;
+      const r = this.radius * 0.9 * progress;
       this.graphics.fillStyle(CONFIG.PLAYER_COLOR, a);
       this.graphics.fillCircle(pt.x, pt.y, r);
     });
 
-    // Outer glow
-    this.graphics.fillStyle(CONFIG.PLAYER_COLOR, 0.2);
-    this.graphics.fillCircle(this.x, this.y, this.radius * 2.5);
-    // Core
+    // ----- WARP AURA (during time warp) -----
+    if (this._warpAura) {
+      const warpPulse = 0.5 + 0.5 * Math.sin(this._pulseAngle * 2.5);
+      this.graphics.fillStyle(0x00ffcc, 0.06 + warpPulse * 0.08);
+      this.graphics.fillCircle(this.x, this.y, this.radius * 5.5 + warpPulse * 6);
+      this.graphics.lineStyle(1.5, 0x00ffcc, 0.35 + warpPulse * 0.35);
+      this.graphics.strokeCircle(this.x, this.y, this.radius * 4.2 + warpPulse * 4);
+    }
+
+    // ----- OUTER SOFT GLOW -----
+    const glowPulse = 0.5 + 0.5 * Math.sin(this._pulseAngle);
+    this.graphics.fillStyle(CONFIG.PLAYER_COLOR, 0.06 + glowPulse * 0.06);
+    this.graphics.fillCircle(this.x, this.y, this.radius * 4.5);
+
+    // ----- MID GLOW -----
+    this.graphics.fillStyle(CONFIG.PLAYER_COLOR, 0.18);
+    this.graphics.fillCircle(this.x, this.y, this.radius * 2.4);
+
+    // ----- ENERGY RING (moving only) -----
+    if (this._isMoving || this._warpAura) {
+      const ringAlpha = this._warpAura ? 0.7 : (0.3 + glowPulse * 0.25);
+      const ringColor = this._warpAura ? 0x00ffcc : CONFIG.PLAYER_COLOR;
+      this.graphics.lineStyle(1.5, ringColor, ringAlpha);
+      this.graphics.strokeCircle(this.x, this.y, this.radius * 1.8);
+    }
+
+    // ----- CORE -----
     this.graphics.fillStyle(CONFIG.PLAYER_COLOR, 1);
     this.graphics.fillCircle(this.x, this.y, this.radius);
-    // Inner highlight
-    this.graphics.fillStyle(0xffffff, 0.6);
-    this.graphics.fillCircle(this.x - 3, this.y - 3, this.radius * 0.35);
+
+    // ----- INNER HIGHLIGHT -----
+    this.graphics.fillStyle(0xffffff, 0.75);
+    this.graphics.fillCircle(this.x - 3, this.y - 3, this.radius * 0.38);
+
+    // ----- SECONDARY INNER RING -----
+    this.graphics.lineStyle(1, 0xffffff, 0.2);
+    this.graphics.strokeCircle(this.x, this.y, this.radius * 0.65);
   }
 
   kill() {

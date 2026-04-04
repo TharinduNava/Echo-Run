@@ -25,10 +25,16 @@ export const CONFIG = {
   RECORD_WINDOW_MS:   120000,
 
   // Effects
-  TRAIL_LENGTH:       12,
-  SCREEN_SHAKE_MS:    350,
-  SCREEN_SHAKE_INT:   10,
-  DEATH_HOLD_MS:      600,
+  TRAIL_LENGTH:       18,        // longer trails
+  SCREEN_SHAKE_MS:    400,
+  SCREEN_SHAKE_INT:   12,
+  DEATH_HOLD_MS:      700,
+
+  // Time Warp
+  TIME_WARP_DURATION:   3000,    // 3s active duration
+  TIME_WARP_COOLDOWN:   10000,   // 10s cooldown
+  TIME_WARP_GHOST_MULT: 0.2,     // ghost speed during warp
+  TIME_WARP_PLAYER_MULT:0.75,    // player speed during warp
 
   // Colors
   COLOR_BG:           '#060d1a',
@@ -40,4 +46,5 @@ export const CONFIG = {
   COLOR_DANGER:       '#ff3355',
   COLOR_GOLD:         '#ffd700',
   COLOR_WARN:         '#ff8c00',
+  COLOR_WARP:         '#00ffcc',
 };
