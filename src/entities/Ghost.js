@@ -1,91 +1,92 @@
 import { CONFIG } from '../config/GameConfig.js';
 
+/**
+ * Ghost uses the LIVE recorder buffer (not a snapshot).
+ * It is always exactly `behindMs` milliseconds behind the current recording.
+ * This means it NEVER loops or resets — as the recording grows, the ghost
+ * always has new frames to advance into.
+ */
 export class Ghost {
-  constructor(scene, path) {
-    this.scene = scene;
-    this.path = path;           // Array<{x, y, t}>
+  constructor(scene, recorder, behindMs) {
+    this.scene    = scene;
+    this.recorder = recorder;
+    this._behindMs = behindMs;
     this.pathIndex = 0;
-    this.alive = true;
-    this.alpha = 0;             // starts invisible, fades in
-    this._dangerIntensity = 0; // proximity warning intensity (0–1)
+    this.alive     = true;
+    this.alpha     = 0;
+    this._dangerIntensity = 0;
     this.trailHistory = [];
-
-    // Validate path
-    if (!this.path || this.path.length < 2) {
-      this.alive = false;
-      return;
-    }
-
-    this.x = this.path[0].x;
-    this.y = this.path[0].y;
+    this._pulseAngle  = Math.random() * Math.PI * 2;
+    this._eyeFlicker  = 0;
+    this._warpSlowed  = false;
     this.radius = CONFIG.GHOST_RADIUS;
 
-    // Graphics
-    this.graphics = scene.add.graphics();
+    const buf = recorder.buffer;
+    if (!buf || buf.length < 2) { this.alive = false; return; }
 
-    // Fade in tween
-    scene.tweens.add({
-      targets: this,
-      alpha: CONFIG.GHOST_ALPHA,
-      duration: CONFIG.GHOST_FADE_IN_MS,
-      ease: 'Linear'
-    });
+    // Start _pathT at the correct position: current recording end - behindMs
+    const currentRecT = buf[buf.length - 1].t;
+    this._pathT = Math.max(buf[0].t, currentRecT - behindMs);
 
-    // Spawn pulse ring effect
-    this.spawnPulse();
-
-    this.pathStartTime = scene.time.now;
-    this.pathOffset = this.path[0].t;
-  }
-
-  spawnPulse() {
-    const pulse = this.scene.add.graphics();
-    pulse.lineStyle(2, CONFIG.GHOST_COLOR, 0.8);
-    pulse.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
-    this.scene.tweens.add({
-      targets: pulse,
-      scaleX: 4, scaleY: 4,
-      alpha: 0,
-      duration: 600,
-      ease: 'Power2',
-      onComplete: () => pulse.destroy()
-    });
-  }
-
-  update(timeWarpMultiplier = 1) {
-    if (!this.alive || !this.path || this.path.length === 0) return;
-
-    // Adjusted for time warp multiplier
-    const elapsed = (this.scene.time.now - this.pathStartTime) * timeWarpMultiplier;
-    const targetT = elapsed + this.pathOffset;
-
-    // Advance path index to match elapsed time
-    while (
-      this.pathIndex < this.path.length - 1 &&
-      this.path[this.pathIndex + 1].t <= targetT
-    ) {
+    // Seek pathIndex
+    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
       this.pathIndex++;
     }
 
-    // Loop path if configured
-    if (this.pathIndex >= this.path.length - 1) {
-      if (CONFIG.GHOST_LOOP_PATH) {
-        this.pathIndex = 0;
-        this.pathStartTime = this.scene.time.now;
-      } else {
-        this.alive = false;
-        this.graphics.setVisible(false);
-        return;
-      }
+    this.x = buf[this.pathIndex].x;
+    this.y = buf[this.pathIndex].y;
+
+    this.graphics = scene.add.graphics().setDepth(18);
+
+    scene.tweens.add({ targets: this, alpha: CONFIG.GHOST_ALPHA, duration: CONFIG.GHOST_FADE_IN_MS, ease: 'Sine.easeOut' });
+    this._doSpawnPulse();
+  }
+
+  _doSpawnPulse() {
+    const pulse = this.scene.add.graphics().setDepth(17);
+    pulse.lineStyle(2, CONFIG.GHOST_COLOR, 0.9);
+    pulse.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
+    this.scene.tweens.add({
+      targets: pulse, scaleX: 5, scaleY: 5, alpha: 0,
+      duration: 600, ease: 'Power2.Out', onComplete: () => pulse.destroy()
+    });
+  }
+
+  update(timeWarpMultiplier = 1, delta = 16) {
+    if (!this.alive) return;
+
+    const buf = this.recorder.buffer;
+    if (!buf || buf.length < 2) return;
+
+    this._warpSlowed  = timeWarpMultiplier < 0.5;
+    this._pulseAngle += 0.05;
+    this._eyeFlicker  = Math.random();
+
+    // Advance path time — delta-based, no absolute-time math (warp-safe)
+    const safeDelta = Math.min(delta, 33);
+    this._pathT += safeDelta * timeWarpMultiplier;
+
+    // Cap to current recording end (ghost can never go "into the future")
+    const maxRecT = buf[buf.length - 1].t;
+    const minRecT = buf[0].t;
+    if (this._pathT > maxRecT) this._pathT = maxRecT;
+    if (this._pathT < minRecT) this._pathT = minRecT;
+
+    // If pathIndex went out of range (buffer pruning), reset it
+    if (this.pathIndex >= buf.length || buf[this.pathIndex].t > this._pathT) {
+      this.pathIndex = 0;
     }
 
-    // Interpolate between frames for smooth movement
-    const curr = this.path[this.pathIndex];
-    const next = this.path[this.pathIndex + 1] || curr;
-    const span = next.t - curr.t;
-    const t = span > 0 ? (targetT - curr.t) / span : 0;
-    const lerpT = Phaser.Math.Clamp(t, 0, 1);
+    // Advance pathIndex
+    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
+      this.pathIndex++;
+    }
 
+    // Interpolate
+    const curr  = buf[this.pathIndex];
+    const next  = buf[Math.min(this.pathIndex + 1, buf.length - 1)];
+    const span  = next.t - curr.t;
+    const lerpT = span > 0 ? Phaser.Math.Clamp((this._pathT - curr.t) / span, 0, 1) : 0;
     this.x = Phaser.Math.Linear(curr.x, next.x, lerpT);
     this.y = Phaser.Math.Linear(curr.y, next.y, lerpT);
 
@@ -94,48 +95,65 @@ export class Ghost {
 
   draw() {
     this.graphics.clear();
-    
-    // Ghost trail history
+    const g      = this.graphics;
+    const danger = this._dangerIntensity || 0;
+    const pulse  = 0.5 + 0.5 * Math.sin(this._pulseAngle);
+    const col    = danger > 0.5 ? 0xff3355 : CONFIG.GHOST_COLOR;
+
+    // Trail
     this.trailHistory.push({ x: this.x, y: this.y });
-    if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) {
-      this.trailHistory.shift();
-    }
+    if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) this.trailHistory.shift();
+    const tMult = this._warpSlowed ? 2.0 : 1;
     this.trailHistory.forEach((pt, i) => {
-      const progress = i / this.trailHistory.length;
-      const a = progress * 0.2 * this.alpha; // dimmer than player
-      const r = this.radius * 0.5 * progress;
-      this.graphics.fillStyle(CONFIG.GHOST_COLOR, a);
-      this.graphics.fillCircle(pt.x, pt.y, r);
+      const prog = (i + 1) / this.trailHistory.length;
+      g.fillStyle(col, Math.min(Math.pow(prog, 1.2) * 0.4 * this.alpha * tMult, 0.75));
+      g.fillCircle(pt.x, pt.y, this.radius * 0.8 * prog * tMult);
     });
 
-    // Outer glow (amplified when player is nearby)
-    const dangerBoost = (this._dangerIntensity || 0);
-    const glowAlpha = this.alpha * (0.15 + dangerBoost * 0.45);
-    const glowRadius = CONFIG.GHOST_RADIUS * (2.5 + dangerBoost * 2.5);
-    this.graphics.fillStyle(CONFIG.GHOST_COLOR, glowAlpha);
-    this.graphics.fillCircle(this.x, this.y, glowRadius);
-    // Core
-    this.graphics.fillStyle(CONFIG.GHOST_COLOR, this.alpha);
-    this.graphics.fillCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
-    // Inner ring
-    this.graphics.lineStyle(1, 0xffffff, this.alpha * 0.4);
-    this.graphics.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS * 0.7);
+    // 3D drop shadow
+    g.fillStyle(0x220033, this.alpha * 0.38);
+    g.fillEllipse(this.x + 3, this.y + 14, 26, 8);
+
+    // Chromatic aberration
+    const ca = 2.5 + danger * 3.5;
+    g.fillStyle(0xff0055, this.alpha * 0.12); g.fillCircle(this.x - ca, this.y, this.radius * 0.95);
+    g.fillStyle(0x00ccff, this.alpha * 0.12); g.fillCircle(this.x + ca, this.y, this.radius * 0.95);
+
+    // Far glow (illuminates arena)
+    g.fillStyle(col, this.alpha * (0.035 + danger * 0.05) + pulse * 0.015);
+    g.fillCircle(this.x, this.y, 65 + danger * 35);
+
+    // Mid glow
+    g.fillStyle(col, this.alpha * (0.18 + danger * 0.42));
+    g.fillCircle(this.x, this.y, this.radius * 3.0 + danger * 8 + pulse * 2.5);
+
+    // Core (3D sphere)
+    g.fillStyle(col, this.alpha);
+    g.fillCircle(this.x, this.y, this.radius);
+    g.fillStyle(0x220033, this.alpha * 0.5);
+    g.fillCircle(this.x + 2.5, this.y + 2.5, this.radius * 0.75); // shadow half
+    g.fillStyle(0xffffff, this.alpha * 0.3);
+    g.fillCircle(this.x - 2.5, this.y - 2.5, this.radius * 0.35); // specular
+
+    // Void eye
+    const eyeA = this.alpha * (0.4 + (danger > 0.3 ? this._eyeFlicker * 0.5 : 0));
+    const eyeC = danger > 0.5 ? 0xff0000 : 0xffffff;
+    g.lineStyle(1, eyeC, eyeA * 0.8); g.strokeCircle(this.x, this.y, this.radius * 0.52);
+    g.fillStyle(eyeC, eyeA);           g.fillCircle(this.x, this.y, this.radius * 0.2);
+
+    // Warp shimmer
+    if (this._warpSlowed) {
+      g.fillStyle(0x001888, 0.2);   g.fillCircle(this.x, this.y, this.radius * 2.4);
+      g.lineStyle(1.5, 0x0066ff, 0.55); g.strokeCircle(this.x, this.y, this.radius * 1.7);
+    }
   }
 
-  setDangerIntensity(danger) {
-    // danger: 0 (far) to 1 (touching). Amplifies glow + alpha when player is near.
-    this._dangerIntensity = Phaser.Math.Clamp(danger, 0, 1);
-  }
+  setDangerIntensity(d) { this._dangerIntensity = Phaser.Math.Clamp(d, 0, 1); }
 
   flashDanger() {
-    const originalAlpha = this.alpha;
-    this.alpha = 1;
-    this.scene.time.delayedCall(100, () => {
-      this.alpha = originalAlpha;
-    });
+    const orig = this.alpha; this.alpha = 1; this._dangerIntensity = 1;
+    this.scene.time.delayedCall(120, () => { this.alpha = orig; this._dangerIntensity = 0; });
   }
 
-  destroy() {
-    this.graphics.destroy();
-  }
+  destroy() { if (this.graphics) this.graphics.destroy(); }
 }
