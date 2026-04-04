@@ -1,7 +1,7 @@
 {
   "name": "echo-run",
   "version": "1.0.0",
-  "description": "ECHO RUN Game",
+  "description": "A Phaser survival game where your past movement paths become enemies.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
