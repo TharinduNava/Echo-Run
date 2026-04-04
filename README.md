@@ -1,48 +1,47 @@
 # ECHO RUN
 
-ECHO RUN is a browser survival game built with Phaser 3 and Vite.
+[![CI](https://github.com/TharinduNava/Echo-Run/actions/workflows/ci.yml/badge.svg)](https://github.com/TharinduNava/Echo-Run/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-## Concept
+ECHO RUN is a fast-paced browser survival game where your previous movements become hostile ghost loops.
 
-You survive inside a digital arena while ghosts replay your past movement paths.  
-The longer you live, the more of your own history comes back to hunt you.
+## Live Concept
 
-## Gameplay
+You are trapped in a digital arena.  
+Every second you survive creates a future threat: your own past path replayed by enemies.
 
-- Move with `WASD` or arrow keys.
-- Avoid ghost paths that mirror your previous actions.
-- Use `SHIFT` to trigger **Time Warp** (temporary slow-motion effect, cooldown-based).
-- Survive as long as possible and beat your best time.
+## Controls
+
+- Move: `WASD` or arrow keys
+- Time Warp: `SHIFT`
+- Restart after death: `SPACE` or click/tap
+
+## Features
+
+- Ghosts replay your previous routes
+- Survival timer + best-score tracking in localStorage
+- Time Warp ability with cooldown
+- Audio feedback, collision system, and death effects
 
 ## Tech Stack
 
 - JavaScript (ES modules)
-- Phaser 3 (CDN import)
-- Vite
+- Phaser 3
+- Vite 5
 
-## Getting Started
-
-### 1. Install dependencies
+## Quick Start
 
 ```bash
 npm install
-```
-
-### 2. Start development server
-
-```bash
 npm run dev
 ```
 
-### 3. Build for production
+Open the local URL shown by Vite (usually `http://localhost:5173`).
+
+## Production Build
 
 ```bash
 npm run build
-```
-
-### 4. Preview production build
-
-```bash
 npm run preview
 ```
 
@@ -51,14 +50,30 @@ npm run preview
 ```text
 src/
   config/      # game constants and balancing values
-  scenes/      # boot, menu, and game scenes
+  scenes/      # boot, menu, and gameplay scenes
   entities/    # player and ghost entities
   systems/     # recording, collision, audio, ghost management
-  ui/          # HUD and UI rendering
+  ui/          # HUD and interface rendering
   effects/     # visual effects
 ```
 
-## Notes
+## Roadmap
 
-- Best score is stored in browser localStorage (`echorun_best`).
-- `node_modules` and build artifacts are excluded from version control via `.gitignore`.
+- Add gameplay difficulty tiers
+- Add pause/settings menu
+- Add mobile touch controls
+- Add score history UI
+
+## Contributing
+
+Issues and pull requests are welcome.  
+Please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+
+## Author
+
+Tharindu Hettige  
+GitHub: [@TharinduNava](https://github.com/TharinduNava)
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).
