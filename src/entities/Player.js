@@ -53,8 +53,11 @@ export class Player {
       dy /= len;
     }
 
-    this.x += dx * CONFIG.PLAYER_SPEED * dt;
-    this.y += dy * CONFIG.PLAYER_SPEED * dt;
+    this.vx = dx * CONFIG.PLAYER_SPEED;
+    this.vy = dy * CONFIG.PLAYER_SPEED;
+
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
 
     // Clamp to arena
     this.x = Phaser.Math.Clamp(this.x, this.minX, this.maxX);

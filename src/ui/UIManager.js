@@ -34,9 +34,17 @@ export class UIManager {
       '',
       { ...style, fontSize: '12px', color: '#ff8800', align: 'center' }
     ).setOrigin(0.5).setDepth(50);
+
+    // Time warp indicator (bottom-right)
+    this.warpText = scene.add.text(
+      CONFIG.CANVAS_WIDTH - CONFIG.ARENA_PADDING - 10,
+      CONFIG.CANVAS_HEIGHT - CONFIG.ARENA_PADDING - 10,
+      'WARP [SHIFT]',
+      { ...style, fontSize: '12px', color: CONFIG.COLOR_CYAN, align: 'right' }
+    ).setOrigin(1, 1).setDepth(50);
   }
 
-  update(survivalMs, ghostCount, timeUntilNextGhost) {
+  update(survivalMs, ghostCount, timeUntilNextGhost, timeWarpAvailable = true, timeWarpActive = false) {
     const seconds = (survivalMs / 1000).toFixed(2);
     this.timeText.setText(`TIME: ${seconds}`);
     this.ghostText.setText(`ECHOES: ${ghostCount}`);
@@ -48,11 +56,21 @@ export class UIManager {
     } else if (ghostCount > 0) {
       this.warningText.setText('');
     }
+
+    // Time warp status
+    if (timeWarpActive) {
+      this.warpText.setText('⟳ TIME WARP ACTIVE').setColor('#00ffcc');
+    } else if (timeWarpAvailable) {
+      this.warpText.setText('WARP [SHIFT]').setColor(CONFIG.COLOR_CYAN);
+    } else {
+      this.warpText.setText('WARP [COOLDOWN]').setColor('#445566');
+    }
   }
 
   destroy() {
     this.timeText.destroy();
     this.ghostText.destroy();
     this.warningText.destroy();
+    this.warpText.destroy();
   }
 }

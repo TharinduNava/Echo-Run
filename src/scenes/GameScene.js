@@ -36,6 +36,14 @@ export class GameScene extends Phaser.Scene {
     this.survivalTime = 0;
     this.gameStartTime = this.time.now;
 
+    // Move sound throttle
+    this._lastMoveSoundTime = 0;
+    this._moveSoundInterval = 80; // ms between move ticks
+
+    // Warning sound throttle
+    this._lastWarnSoundTime = 0;
+    this._warnSoundInterval = 500;
+
     // Advanced: Time Warp System
     this.timeWarpAvailable = true;
     this.timeWarpActive = false;
@@ -153,11 +161,34 @@ export class GameScene extends Phaser.Scene {
     if (this.ghostManager.ghostCount === 0) {
       timeUntilNextGhost = CONFIG.GHOST_DELAY - this.survivalTime;
     }
-    this.uiManager.update(this.survivalTime, this.ghostManager.ghostCount, timeUntilNextGhost);
+    this.uiManager.update(this.survivalTime, this.ghostManager.ghostCount, timeUntilNextGhost, this.timeWarpAvailable, this.timeWarpActive);
 
-    // Check Audio Move 
-    if (this.player.vx !== 0 || this.player.vy !== 0) {
-      this.audioManager.playMove(); // Too frequent depending on game, skipped for now or throttled
+    // Move sound (throttled)
+    if ((this.player.vx !== 0 || this.player.vy !== 0) &&
+        this.time.now - this._lastMoveSoundTime > this._moveSoundInterval) {
+      this.audioManager.playMove();
+      this._lastMoveSoundTime = this.time.now;
+    }
+
+    // Proximity warning + danger glow
+    const WARN_DISTANCE = 60;
+    let anyNear = false;
+    this.ghostManager.getAllGhosts().forEach(ghost => {
+      const dx = this.player.x - ghost.x;
+      const dy = this.player.y - ghost.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < WARN_DISTANCE) {
+        const danger = 1 - (dist / WARN_DISTANCE);
+        ghost.setDangerIntensity(danger);
+        anyNear = true;
+      } else {
+        ghost.setDangerIntensity(0);
+      }
+    });
+
+    if (anyNear && this.time.now - this._lastWarnSoundTime > this._warnSoundInterval) {
+      this.audioManager.playWarning();
+      this._lastWarnSoundTime = this.time.now;
     }
 
     // Check Collisions

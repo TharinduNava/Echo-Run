@@ -7,7 +7,8 @@ export class Ghost {
     this.pathIndex = 0;
     this.alive = true;
     this.alpha = 0;             // starts invisible, fades in
-    this.trailHistory = []; // Add trail history for ghost
+    this._dangerIntensity = 0; // proximity warning intensity (0–1)
+    this.trailHistory = [];
 
     // Validate path
     if (!this.path || this.path.length < 2) {
@@ -107,15 +108,23 @@ export class Ghost {
       this.graphics.fillCircle(pt.x, pt.y, r);
     });
 
-    // Outer glow
-    this.graphics.fillStyle(CONFIG.GHOST_COLOR, this.alpha * 0.15);
-    this.graphics.fillCircle(this.x, this.y, CONFIG.GHOST_RADIUS * 2.5);
+    // Outer glow (amplified when player is nearby)
+    const dangerBoost = (this._dangerIntensity || 0);
+    const glowAlpha = this.alpha * (0.15 + dangerBoost * 0.45);
+    const glowRadius = CONFIG.GHOST_RADIUS * (2.5 + dangerBoost * 2.5);
+    this.graphics.fillStyle(CONFIG.GHOST_COLOR, glowAlpha);
+    this.graphics.fillCircle(this.x, this.y, glowRadius);
     // Core
     this.graphics.fillStyle(CONFIG.GHOST_COLOR, this.alpha);
     this.graphics.fillCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
     // Inner ring
     this.graphics.lineStyle(1, 0xffffff, this.alpha * 0.4);
     this.graphics.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS * 0.7);
+  }
+
+  setDangerIntensity(danger) {
+    // danger: 0 (far) to 1 (touching). Amplifies glow + alpha when player is near.
+    this._dangerIntensity = Phaser.Math.Clamp(danger, 0, 1);
   }
 
   flashDanger() {
