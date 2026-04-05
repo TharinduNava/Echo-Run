@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          npm --no-git-tag-version version $VERSION
+          npm --no-git-tag-version --allow-same-version version $VERSION
 
       - name: Build and Publish Electron App
         env:
