@@ -78,13 +78,20 @@ export class MenuScene extends Phaser.Scene {
     // ── Leaderboard ───────────────────────────────────────
     const lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
     if(lb.length>0){
-      const lbY=cy+158;
+      // Show top-10 in two columns if 6+ entries
+      const lbY=cy+155;
       this._fade(this.add.text(cx,lbY,'TOP SCORES',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1500);
-      lb.slice(0,5).forEach((score,i)=>{
-        const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:'#445566';
-        this._fade(this.add.text(cx,lbY+16+i*16,`#${i+1}  ${(score/1000).toFixed(2)}s`,{
-          fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:col,align:'center'
-        }).setOrigin(0.5).setDepth(10).setAlpha(0),1600+i*100);
+      const shown=lb.slice(0,10);
+      const useTwo=shown.length>5;
+      shown.forEach((score,i)=>{
+        const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:i<5?'#667788':'#445566';
+        const col2 = i===0?'#aaaa00':i<3?'#007799':i<5?'#334455':'#223344';
+        const col3 = i===0?'#888800':i<3?'#005566':i<5?'#223344':'#111122';
+        const cx2=useTwo?(i<5?cx-70:cx+60):cx;
+        const row=useTwo?(i<5?i:i-5):i;
+        this._fade(this.add.text(cx2,lbY+14+row*15,`#${i+1}  ${(score/1000).toFixed(2)}s`,{
+          fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:col,align:'center'
+        }).setOrigin(0.5).setDepth(10).setAlpha(0),1600+i*80);
       });
     }
 

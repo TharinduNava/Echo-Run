@@ -152,14 +152,18 @@ export class UIManager {
 
     // ── Powerup HUD (bottom-left) ─────────────────────────
     if (heldPowerup && !powerupActive) {
-      const bpCol = heldPowerup === 'clash' ? CONFIG.COLOR_CLASH : CONFIG.COLOR_PHASE;
-      const icon = heldPowerup === 'clash' ? '💀 CLASH' : '🛡 PHASE';
+      const colorMap = { clash: CONFIG.COLOR_CLASH, phase: CONFIG.COLOR_PHASE, decoy: CONFIG.COLOR_DECOY };
+      const iconMap  = { clash: '💀 CLASH', phase: '🛡 PHASE', decoy: '👁 DECOY' };
+      const bpCol = colorMap[heldPowerup] || CONFIG.COLOR_CYAN;
+      const icon  = iconMap[heldPowerup]  || heldPowerup.toUpperCase();
       this.powerupText.setText(icon).setColor(bpCol).setAlpha(0.9 + 0.1 * Math.sin(now / 200));
       this.powerupKeyHint.setText('Press E to activate').setColor('#557788');
       this.powerupBar.clear();
     } else if (powerupActive) {
-      const bpCol = powerupActive === 'clash' ? CONFIG.COLOR_CLASH : CONFIG.COLOR_PHASE;
-      const icon = powerupActive === 'clash' ? 'CLASH ACTIVE' : 'PHASE ACTIVE';
+      const colorMap2 = { clash: CONFIG.COLOR_CLASH, phase: CONFIG.COLOR_PHASE, decoy: CONFIG.COLOR_DECOY };
+      const labelMap2 = { clash: 'CLASH ACTIVE', phase: 'PHASE ACTIVE', decoy: 'DECOY ACTIVE' };
+      const bpCol = colorMap2[powerupActive] || CONFIG.COLOR_CYAN;
+      const icon  = labelMap2[powerupActive] || `${powerupActive.toUpperCase()} ACTIVE`;
       this.powerupText.setText(icon).setColor(bpCol).setAlpha(1);
       this.powerupKeyHint.setText('');
       // Active bar
@@ -167,7 +171,8 @@ export class UIManager {
       this.powerupBar.clear();
       this.powerupBar.fillStyle(0x111111, 0.8);
       this.powerupBar.fillRect(bpX + 10, bpY + 40, 120, 5);
-      this.powerupBar.fillStyle(powerupActive === 'clash' ? 0xff6600 : 0x00ccff, 0.9);
+      const barColorMap = { clash: 0xff6600, phase: 0x00ccff, decoy: 0x00ff88 };
+      this.powerupBar.fillStyle(barColorMap[powerupActive] || 0x00ccff, 0.9);
       this.powerupBar.fillRect(bpX + 10, bpY + 40, 120 * powerupProgress, 5);
     } else {
       this.powerupText.setText('NONE').setColor('#334455').setAlpha(1);

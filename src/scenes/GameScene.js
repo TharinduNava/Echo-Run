@@ -15,12 +15,13 @@ export class GameScene extends Phaser.Scene {
   constructor() { super({ key: 'GameScene' }); }
 
   init(data) {
-    // Difficulty passed from menu
     const diff   = (data && data.difficulty) || 'normal';
     const preset = CONFIG.DIFFICULTIES[diff] || CONFIG.DIFFICULTIES.normal;
     this._ghostDelay    = preset.ghostDelay;
     this._ghostInterval = preset.ghostInterval;
     this._difficulty    = diff;
+    // Passive buff from milestone choices: { nerveDecay, warpRecharge, clashDuration }
+    this._passiveBuff   = data && data.passiveBuff ? data.passiveBuff : null;
   }
 
   create() {
@@ -30,7 +31,7 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', () => this.audioManager.resume());
     this.input.keyboard.on('keydown', () => this.audioManager.resume());
 
-    // Graphics layers (depth ordered)
+    // Graphics layers
     this._bgGraphics      = this.add.graphics().setDepth(0);
     this._perspGrid       = this.add.graphics().setDepth(1);
     this._gridGraphics    = this.add.graphics().setDepth(2);
@@ -38,6 +39,8 @@ export class GameScene extends Phaser.Scene {
     this._ambientGraphics = this.add.graphics().setDepth(4);
     this._depthGraphics   = this.add.graphics().setDepth(9);
     this._borderPulseGfx  = this.add.graphics().setDepth(35);
+    this._vignetteGfx     = this.add.graphics().setDepth(34);  // tension vignette
+    this._warpTintGfx     = this.add.graphics().setDepth(37);  // bullet-time desaturation overlay
 
     this._drawBackground();
     this._drawPerspectiveGrid();
@@ -45,12 +48,10 @@ export class GameScene extends Phaser.Scene {
     this._drawArenaFrame();
     this._ambientParticles = this._createAmbientParticles();
 
-    // Warp overlay state
     this._warpOverlay  = null;
     this._warpScanLine = null;
     this._warpGridGfx  = null;
 
-    // Core systems
     this.recorder      = new Recorder();
     this.scoreSystem   = new ScoreSystem(this);
     this.waveAnnouncer = new WaveAnnouncer(this);
@@ -59,8 +60,9 @@ export class GameScene extends Phaser.Scene {
     this.powerupManager= new PowerupManager(this, this.audioManager, this.scoreSystem);
     this.uiManager     = new UIManager(this);
 
+    // Apply passive buff from previous milestone choice
+    if (this._passiveBuff) this._applyPassiveBuff(this._passiveBuff);
 
-    // Timing
     this.survivalTime       = 0;
     this.gameStartTime      = this.time.now;
     this._lastMoveSoundTime = 0;
@@ -68,27 +70,28 @@ export class GameScene extends Phaser.Scene {
     this._moveSoundInterval = 80;
     this._warnSoundInterval = 500;
 
-    // Milestones
     this._milestones = [CONFIG.MILESTONE_1, CONFIG.MILESTONE_2, CONFIG.MILESTONE_3];
     this._milestonesHit = new Set();
 
-    // Near-miss tracking (two persistent sets swapped each frame to avoid allocation)
+    // Near-miss tracking
     this._nearMissTracked = new Set();
     this._nearMissWorkSet = new Set();
     this._nearMissIds = new Set();
 
-    // Stats
+    // Warp near-miss recharge tracking
+    this._warpRechargeReady = false;
+
     this._warpUseCount = 0;
 
-    // Time Warp
     this.timeWarpAvailable   = true;
     this.timeWarpActive      = false;
     this._warpCooldownStart  = null;
 
-    // Pause
     this._pauseGroup = null;
 
-    // Input
+    // Passive buff state (accumulated across restarts within the same run — reset on true restart)
+    this._activePBuff = null;
+
     this.input.keyboard.on('keydown-SHIFT', () => {
       if (this.timeWarpAvailable && !this.timeWarpActive && this.state === 'PLAYING') {
         this.activateTimeWarp();
@@ -99,6 +102,9 @@ export class GameScene extends Phaser.Scene {
       this.powerupManager.activate(this.ghostManager.getAllGhosts(), (ghost) => {
         ClashKillEffect.play(this, ghost.x, ghost.y);
         this.ghostManager.killGhost(ghost);
+        // Show clash chain text if multiple kills
+        const kills = this.powerupManager.clashKillCount;
+        if (kills >= 2) this._showFloatingText(ghost.x, ghost.y - 20, `×${kills} CHAIN!`, '#ffd700', '14px');
       });
     });
     this.input.keyboard.on('keydown-ESC', () => {
@@ -113,8 +119,12 @@ export class GameScene extends Phaser.Scene {
       if (this.state === 'DEAD') this.restartGame();
     });
 
-    // Start adaptive music
     this.time.delayedCall(500, () => this.audioManager.startAdaptiveBg());
+  }
+
+  _applyPassiveBuff(buff) {
+    this._activePBuff = buff;
+    // Buff effects applied at runtime in update / activateTimeWarp
   }
 
   // ================================================================= BACKGROUND
@@ -224,7 +234,49 @@ export class GameScene extends Phaser.Scene {
     if(this.player&&this.player.alive){g.fillStyle(0x000000,0.3);g.fillEllipse(this.player.x+10,this.player.y+16,22,7);}
   }
 
-  // Arena border danger pulse
+  // Tension vignette — darkens and reddens as ghost count rises
+  _updateVignette(tension) {
+    const g = this._vignetteGfx;
+    g.clear();
+    if (tension < 0.1) return;
+    const W = CONFIG.CANVAS_WIDTH, H = CONFIG.CANVAS_HEIGHT;
+    const cx = W / 2, cy = H / 2;
+    // Dark outer vignette
+    for (let i = 6; i >= 1; i--) {
+      const t = i / 6;
+      const alpha = tension * (1 - t) * 0.35;
+      g.fillStyle(0x000000, alpha);
+      g.fillRect(
+        cx - (W/2) * t, cy - (H/2) * t,
+        W * t, H * t
+      );
+    }
+    // Red danger tint at high tension
+    if (tension > 0.5) {
+      const redAlpha = (tension - 0.5) * 0.28;
+      const pulse = 0.5 + 0.5 * Math.sin(this.time.now / 300);
+      g.fillStyle(0xff0000, redAlpha * (0.7 + pulse * 0.3));
+      g.fillRect(0, 0, W, 6);
+      g.fillRect(0, H - 6, W, 6);
+      g.fillRect(0, 0, 6, H);
+      g.fillRect(W - 6, 0, 6, H);
+    }
+  }
+
+  // Bullet-time warp: blue desaturation overlay during warp
+  _updateWarpTint() {
+    const g = this._warpTintGfx;
+    g.clear();
+    if (!this.timeWarpActive) return;
+    const W = CONFIG.CANVAS_WIDTH, H = CONFIG.CANVAS_HEIGHT;
+    // Subtle blue-grey desaturation layer
+    g.fillStyle(0x0a1a2e, 0.18);
+    g.fillRect(0, 0, W, H);
+    // Blue edge glow
+    g.lineStyle(8, 0x00ffcc, 0.12);
+    g.strokeRect(0, 0, W, H);
+  }
+
   _updateBorderPulse(nearbyDanger) {
     const g=this._borderPulseGfx; g.clear();
     if(!nearbyDanger) return;
@@ -236,11 +288,26 @@ export class GameScene extends Phaser.Scene {
     g.strokeRect(p,p,W-p*2,H-p*2);
   }
 
+  // =============================================================== FLOATING TEXT
+  _showFloatingText(x, y, text, color = '#ffffff', fontSize = '12px') {
+    const t = this.add.text(x, y, text, {
+      fontFamily: 'Orbitron, monospace', fontSize, color,
+      stroke: '#000000', strokeThickness: 4, align: 'center'
+    }).setOrigin(0.5).setDepth(89).setAlpha(0);
+    this.tweens.add({
+      targets: t, alpha: { from: 1, to: 0 },
+      y: { from: y, to: y - 50 },
+      duration: 1100, ease: 'Power2',
+      onComplete: () => t.destroy()
+    });
+  }
+
   // =============================================================== TIME WARP
   activateTimeWarp() {
     this.timeWarpActive   = true;
     this.timeWarpAvailable= false;
     this._warpCooldownStart = null;
+    this._warpRechargeReady = false;
     this.scoreSystem.recordWarpUse();
     this._warpUseCount++;
 
@@ -255,14 +322,20 @@ export class GameScene extends Phaser.Scene {
     this.player._warpAura=true;
     this._showWarpBanner();
 
+    // Buff: shorter cooldown if nearMiss buff active
+    const cooldown = (this._activePBuff === 'warpRecharge')
+      ? CONFIG.TIME_WARP_COOLDOWN * 0.65
+      : CONFIG.TIME_WARP_COOLDOWN;
+
     this.time.delayedCall(CONFIG.TIME_WARP_DURATION,()=>{
       this.timeWarpActive=false; this.player._warpAura=false;
       if(this._warpOverlay){this.tweens.add({targets:this._warpOverlay,alpha:0,duration:350,onComplete:()=>{this._warpOverlay&&this._warpOverlay.destroy();this._warpOverlay=null;}});}
       if(this._warpScanLine){this._warpScanLine.destroy();this._warpScanLine=null;}
       if(this._warpGridGfx){this._warpGridGfx.destroy();this._warpGridGfx=null;}
       this._warpCooldownStart=this.time.now;
-      this.time.delayedCall(CONFIG.TIME_WARP_COOLDOWN,()=>{
-        this.timeWarpAvailable=true; this._warpCooldownStart=null;
+      this._warpRechargeReady = true;  // allow near-miss to speed up recharge
+      this.time.delayedCall(cooldown,()=>{
+        this.timeWarpAvailable=true; this._warpCooldownStart=null; this._warpRechargeReady=false;
         this._flashWarpReady();
       });
     });
@@ -328,16 +401,13 @@ export class GameScene extends Phaser.Scene {
     this.state='PAUSED';
     this.physics && this.physics.pause();
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-
     const group = [];
     const overlay=this.add.rectangle(cx,cy,W,H,0x000000).setAlpha(0.55).setDepth(200);
     group.push(overlay);
-
     const panel=this.add.graphics().setDepth(201);
     panel.fillStyle(0x000000,0.9); panel.fillRoundedRect(cx-160,cy-110,320,220,12);
     panel.lineStyle(2,0x00f5ff,0.5); panel.strokeRoundedRect(cx-160,cy-110,320,220,12);
     group.push(panel);
-
     const title=this.add.text(cx,cy-78,'PAUSED',{fontFamily:'Orbitron, monospace',fontSize:'24px',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(202);
     const stats=this.add.text(cx,cy-30,`TIME: ${(this.survivalTime/1000).toFixed(2)}s\nECHOES: ${this.ghostManager.ghostCount}`,{fontFamily:'Share Tech Mono, monospace',fontSize:'14px',color:'#aabbcc',align:'center'}).setOrigin(0.5).setDepth(202);
     const hint=this.add.text(cx,cy+60,'ESC / SPACE — RESUME',{fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:'#334455'}).setOrigin(0.5).setDepth(202);
@@ -362,16 +432,99 @@ export class GameScene extends Phaser.Scene {
 
   _triggerMilestone(ms) {
     this.audioManager.playMilestone();
+    this.scoreSystem.applyMilestoneBonus();
+
     const labels={[CONFIG.MILESTONE_1]:'TEMPORAL ADEPT',  [CONFIG.MILESTONE_2]:'CHRONO MASTER', [CONFIG.MILESTONE_3]:'ECHO SOVEREIGN'};
     const label=labels[ms]||'MILESTONE';
-    const cx=CONFIG.CANVAS_WIDTH/2;
-    const t=this.add.text(cx,CONFIG.CANVAS_HEIGHT/2,'✦ '+label+' ✦',{
+    const cx=CONFIG.CANVAS_WIDTH/2, cy=CONFIG.CANVAS_HEIGHT/2;
+    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
+
+    // Gold screen flash
+    const flash=this.add.rectangle(cx,cy,W,H,0xffd700).setAlpha(0).setDepth(73);
+    this.tweens.add({targets:flash,alpha:{from:0.22,to:0},duration:500,ease:'Power2',onComplete:()=>flash.destroy()});
+
+    // Zoom pulse on arena border
+    this.cameras.main.zoomTo(1.018, 200, 'Power2', true);
+    this.time.delayedCall(200, () => this.cameras.main.zoomTo(1.0, 300, 'Power2', true));
+
+    const t=this.add.text(cx,cy,'✦ '+label+' ✦',{
       fontFamily:'Orbitron, monospace',fontSize:'22px',color:CONFIG.COLOR_GOLD,
       stroke:'#000000',strokeThickness:6,align:'center'
     }).setOrigin(0.5).setDepth(75).setAlpha(0);
-    this.tweens.add({targets:t,alpha:1,y:{from:CONFIG.CANVAS_HEIGHT/2+30,to:CONFIG.CANVAS_HEIGHT/2},duration:400,ease:'Back.easeOut',
-      onComplete:()=>{this.time.delayedCall(1800,()=>{this.tweens.add({targets:t,alpha:0,duration:500,onComplete:()=>t.destroy()});});}
+    this.tweens.add({targets:t,alpha:1,y:{from:cy+30,to:cy},duration:400,ease:'Back.easeOut',
+      onComplete:()=>{this.time.delayedCall(1200,()=>{
+        // After label fades, show buff choice if not at last milestone
+        this.tweens.add({targets:t,alpha:0,duration:400,onComplete:()=>{
+          t.destroy();
+          this._showBuffChoice();
+        }});
+      });}
     });
+  }
+
+  /** Show 3 passive buff choices after each milestone */
+  _showBuffChoice() {
+    if (this.state !== 'PLAYING') return;
+    this.state = 'PAUSED';
+
+    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
+    const buffs = [
+      { key: 'nerveDecay',    label: 'NERVE ANCHOR',  desc: 'Nerve decays 40% slower', color: '#ff8c00' },
+      { key: 'warpRecharge',  label: 'WARP SPRINT',   desc: 'Warp cooldown –35%',       color: '#00ffcc' },
+      { key: 'clashDuration', label: 'CLASH SURGE',   desc: 'Clash lasts 3s longer',    color: '#ff6600' },
+    ];
+
+    const group = [];
+    const overlay=this.add.rectangle(cx,cy,W,H,0x000000).setAlpha(0.7).setDepth(200);
+    group.push(overlay);
+
+    const panel=this.add.graphics().setDepth(201);
+    panel.fillStyle(0x000000,0.92); panel.fillRoundedRect(cx-220,cy-120,440,240,14);
+    panel.lineStyle(2,0xffd700,0.6); panel.strokeRoundedRect(cx-220,cy-120,440,240,14);
+    group.push(panel);
+
+    const title=this.add.text(cx,cy-98,'CHOOSE YOUR BUFF',{fontFamily:'Orbitron, monospace',fontSize:'16px',color:'#ffd700'}).setOrigin(0.5).setDepth(202);
+    group.push(title);
+
+    buffs.forEach((b, i) => {
+      const bx = cx - 130 + i * 130;
+      const by = cy - 20;
+      const bg = this.add.graphics().setDepth(202);
+      bg.fillStyle(0x111111, 0.9); bg.fillRoundedRect(bx - 55, by - 40, 110, 90, 8);
+      bg.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(b.color).color, 0.6);
+      bg.strokeRoundedRect(bx - 55, by - 40, 110, 90, 8);
+      group.push(bg);
+
+      const numT = this.add.text(bx, by - 22, `[${i+1}]`, {fontFamily:'Orbitron, monospace',fontSize:'11px',color:'#445566'}).setOrigin(0.5).setDepth(203);
+      const lbl  = this.add.text(bx, by + 2, b.label, {fontFamily:'Orbitron, monospace',fontSize:'10px',color:b.color}).setOrigin(0.5).setDepth(203);
+      const dsc  = this.add.text(bx, by + 24, b.desc, {fontFamily:'Share Tech Mono, monospace',fontSize:'9px',color:'#aabbcc',align:'center',wordWrap:{width:100}}).setOrigin(0.5).setDepth(203);
+      group.push(numT, lbl, dsc);
+    });
+
+    const cleanup = (buffKey) => {
+      group.forEach(o => o.destroy());
+      keyListeners.forEach(k => k.destroy());
+      this._activePBuff = buffKey;
+      this._applyImmediateBuff(buffKey);
+      this.state = 'PLAYING';
+    };
+
+    const keyListeners = [
+      this.input.keyboard.addKey('ONE').on('down', () => cleanup(buffs[0].key)),
+      this.input.keyboard.addKey('TWO').on('down', () => cleanup(buffs[1].key)),
+      this.input.keyboard.addKey('THREE').on('down', () => cleanup(buffs[2].key)),
+      this.input.keyboard.addKey('NUMPAD_ONE').on('down', () => cleanup(buffs[0].key)),
+      this.input.keyboard.addKey('NUMPAD_TWO').on('down', () => cleanup(buffs[1].key)),
+      this.input.keyboard.addKey('NUMPAD_THREE').on('down', () => cleanup(buffs[2].key)),
+    ];
+  }
+
+  /** Immediately apply the picked buff effect */
+  _applyImmediateBuff(buff) {
+    if (buff === 'clashDuration') {
+      CONFIG.POWERUP_CLASH_DURATION = 8000;  // 5s → 8s
+    }
+    // nerveDecay and warpRecharge are applied in update() / activateTimeWarp()
   }
 
   // ============================================================== MAIN UPDATE
@@ -398,9 +551,15 @@ export class GameScene extends Phaser.Scene {
     this._drawEntityShadows();
     if(this.timeWarpActive) this._updateWarpScanLines();
 
-    // Adaptive music tension
+    // Tension level
     const tension=Math.min(1, this.ghostManager.ghostCount / CONFIG.MAX_GHOSTS);
     this.audioManager.setTension(tension);
+
+    // Vignette scales with tension
+    this._updateVignette(tension);
+
+    // Bullet-time warp tint
+    this._updateWarpTint();
 
     // Warp cooldown
     let warpProgress=1;
@@ -418,23 +577,40 @@ export class GameScene extends Phaser.Scene {
       const dist=Math.hypot(this.player.x-ghost.x, this.player.y-ghost.y);
       if(dist<WARN_DIST){ ghost.setDangerIntensity(1-dist/WARN_DIST); anyNear=true; anyDanger=true; }
       else ghost.setDangerIntensity(0);
-
       if(dist<NEAR_MISS+12) nextNear.add(ghost);
     });
 
-    // Near-miss: ghost was in range last frame but not this frame (just passed by)
+    // Near-miss detection
     this._nearMissTracked.forEach(g=>{
       if(!nextNear.has(g) && !this._nearMissIds.has(g)){
         this._nearMissIds.add(g);
-        this.scoreSystem.recordNearMiss();
-        this.audioManager.playNearMiss();
-        this._flashNearMiss();
+        const combo = this.scoreSystem.recordNearMiss();
+
+        // Closeness: how close relative to NEAR_MISS threshold
+        const dist = Math.hypot(this.player.x-g.x, this.player.y-g.y);
+        const closeness = Math.max(0, 1 - dist / (NEAR_MISS + 12));
+        this.audioManager.playNearMiss(closeness);
+
+        // Warp near-miss recharge: if warp on cooldown, shave 20% off remaining time
+        if (this._warpRechargeReady && this._warpCooldownStart !== null) {
+          const elapsed = this.time.now - this._warpCooldownStart;
+          this._warpCooldownStart = this.time.now - elapsed - CONFIG.TIME_WARP_COOLDOWN * 0.2;
+          this._showFloatingText(this.player.x, this.player.y - 30, 'WARP –20%', '#00ffcc', '10px');
+        }
+
+        // Floating near-miss text with combo
+        if (combo >= 2) {
+          this._showFloatingText(this.player.x, this.player.y - 30, `×${combo} DODGE!`, '#ffd700', '13px');
+        } else {
+          this._flashNearMiss(g.x, g.y);
+        }
       }
     });
-    // Swap sets (zero allocation)
+
+    // Swap sets
     this._nearMissWorkSet=this._nearMissTracked;
     this._nearMissTracked=nextNear;
-    // Clean up near-miss id memory for dead ghosts
+
     const ghostSet=new Set(ghostsNow);
     this._nearMissIds.forEach(g=>{ if(!ghostSet.has(g)) this._nearMissIds.delete(g); });
 
@@ -444,12 +620,22 @@ export class GameScene extends Phaser.Scene {
       this.audioManager.playWarning(); this._lastWarnSoundTime=this.time.now;
     }
 
-    // Move sound
     if((this.player.vx!==0||this.player.vy!==0)&&this.time.now-this._lastMoveSoundTime>this._moveSoundInterval){
       this.audioManager.playMove(); this._lastMoveSoundTime=this.time.now;
     }
 
-    // Phase powerup = skip collision
+    // Update player nerve level for color shift
+    const nerveLevel = (this.scoreSystem.nerveMultiplier - 1) / (CONFIG.NERVE_MAX_MULT - 1);
+    this.player.nerveLevel = Phaser.Math.Clamp(nerveLevel, 0, 1);
+
+    // Peak multiplier flash text
+    if (this.scoreSystem.peakActive && !this._peakFlashShown) {
+      this._peakFlashShown = true;
+      this._showFloatingText(CONFIG.CANVAS_WIDTH/2, CONFIG.CANVAS_HEIGHT/2 - 40, '⚡ PEAK ×8 ⚡', '#ffd700', '16px');
+    } else if (!this.scoreSystem.peakActive) {
+      this._peakFlashShown = false;
+    }
+
     const inPhase=this.powerupManager.phaseActive;
 
     if(!inPhase){
@@ -463,8 +649,8 @@ export class GameScene extends Phaser.Scene {
     this.player.graphics.setAlpha(inPhase ? 0.45 : 1);
 
     // UI update
+    const pwActive = this.powerupManager.activeType;
     const pwType   = this.powerupManager.heldType;
-    const pwActive = this.powerupManager.clashActive ? 'clash' : (this.powerupManager.phaseActive ? 'phase' : false);
     const pwProg   = this.powerupManager.activeProgress;
 
     this.uiManager.update(
@@ -476,19 +662,20 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  _flashNearMiss() {
+  _flashNearMiss(gx, gy) {
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const f=this.add.rectangle(cx,cy,W,H,0xffffff).setAlpha(0.12).setDepth(88);
+    const f=this.add.rectangle(cx,cy,W,H,0xffffff).setAlpha(0.10).setDepth(88);
     this.tweens.add({targets:f,alpha:0,duration:200,ease:'Power2',onComplete:()=>f.destroy()});
-    const t=this.add.text(cx,cy-60,'CLOSE CALL',{fontFamily:'Orbitron, monospace',fontSize:'13px',color:'#ffffff',stroke:'#000',strokeThickness:4}).setOrigin(0.5).setDepth(89).setAlpha(0);
-    this.tweens.add({targets:t,alpha:{from:1,to:0},y:{from:cy-60,to:cy-90},duration:900,ease:'Power2',onComplete:()=>t.destroy()});
+    const tx = gx !== undefined ? gx : cx;
+    const ty = gy !== undefined ? gy - 20 : cy - 60;
+    this._showFloatingText(tx, ty, 'CLOSE CALL', '#ffffff', '12px');
   }
 
   // ============================================================== DEATH
   onDeath(ghost) {
     if(this.state!=='PLAYING') return;
     this.state='DYING';
-    this.audioManager.playDeath();
+    this.audioManager.playDeath(this.survivalTime);
     this.audioManager.stopAdaptiveBg();
     this.ghostManager.stop();
     this.player.kill();
@@ -509,7 +696,7 @@ export class GameScene extends Phaser.Scene {
 
   _showDeathScreen() {
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const pw=500, ph=370;
+    const pw=520, ph=400;
 
     const panel=this.add.graphics().setDepth(90).setAlpha(0);
     panel.fillStyle(0x000000,0.7); panel.fillRoundedRect(cx-pw/2+8,cy-ph/2+8,pw,ph,14);
@@ -518,10 +705,9 @@ export class GameScene extends Phaser.Scene {
     panel.lineStyle(2,0xff3355,0.85); panel.strokeRoundedRect(cx-pw/2+4,cy-ph/2+4,pw-8,ph-8,11);
     this.tweens.add({targets:panel,alpha:1,duration:320,ease:'Power2'});
 
-    // Glitch title
     const TARGET='ECHO TERMINATED';
     const GLYPHS='█▓▒░▀■□▪▫◆◇';
-    const titleEl=this.add.text(cx,cy-148,TARGET,{fontFamily:'Orbitron, monospace',fontSize:'26px',color:CONFIG.COLOR_DANGER,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+    const titleEl=this.add.text(cx,cy-165,TARGET,{fontFamily:'Orbitron, monospace',fontSize:'26px',color:CONFIG.COLOR_DANGER,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
     this.time.delayedCall(180,()=>{
       titleEl.setAlpha(1);
       let step=0;
@@ -533,30 +719,32 @@ export class GameScene extends Phaser.Scene {
       }});
     });
 
-    // Stats
+    // Update leaderboard (top-10)
     const best=parseFloat(localStorage.getItem('echorun_best')||'0');
     const isNew=this.survivalTime>best;
     if(isNew) localStorage.setItem('echorun_best',String(this.survivalTime));
-    // Leaderboard
     let lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
-    lb.push(this.survivalTime); lb.sort((a,b)=>b-a); lb=lb.slice(0,5);
+    lb.push(this.survivalTime); lb.sort((a,b)=>b-a); lb=lb.slice(0,10);
     localStorage.setItem('echorun_lb',JSON.stringify(lb));
     const rank=lb.indexOf(this.survivalTime)+1;
 
+    const comboText = this.scoreSystem.stats.bestCombo >= 2
+      ? `BEST COMBO: ×${this.scoreSystem.stats.bestCombo}` : '';
+
     const stats=[
       {t:`SURVIVED: ${(this.survivalTime/1000).toFixed(2)}s`,c:'#ffffff',s:'20px'},
-      {t:`ECHOES: ${this.ghostManager.ghostCount}  |  RANK #${rank}`,c:'#a855f7',s:'14px'},
+      {t:`ECHOES: ${this.ghostManager.ghostCount}  |  RANK #${rank} / 10`,c:'#a855f7',s:'14px'},
       {t:isNew?'✦  NEW BEST  ✦':`BEST: ${(best/1000).toFixed(2)}s`,c:isNew?'#ffd700':'#556677',s:'13px'},
-      {t:`NEAR-MISSES: ${this.scoreSystem.stats.nearMisses}`,c:'#ff8c00',s:'12px'},
+      {t:`NEAR-MISSES: ${this.scoreSystem.stats.nearMisses}  ${comboText}`,c:'#ff8c00',s:'12px'},
       {t:`WARP USED: ${this.scoreSystem.stats.warpUses}  |  CLASHES: ${this.scoreSystem.stats.clashKills}`,c:'#00f5ff',s:'12px'},
       {t:`NERVE PEAK: ×${(this.scoreSystem.nerveMultiplier).toFixed(1)}  |  POWERUPS: ${this.scoreSystem.stats.powerupsCollected}`,c:'#aabbcc',s:'12px'},
     ];
     stats.forEach(({t,c,s},i)=>{
-      const el=this.add.text(cx,cy-88+i*36,t,{fontFamily:'Share Tech Mono, monospace',fontSize:s,color:c,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
-      this.time.delayedCall(400+i*140,()=>{this.tweens.add({targets:el,alpha:1,y:{from:cy-68+i*36,to:cy-88+i*36},duration:260,ease:'Back.easeOut'});});
+      const el=this.add.text(cx,cy-100+i*38,t,{fontFamily:'Share Tech Mono, monospace',fontSize:s,color:c,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+      this.time.delayedCall(400+i*140,()=>{this.tweens.add({targets:el,alpha:1,y:{from:cy-80+i*38,to:cy-100+i*38},duration:260,ease:'Back.easeOut'});});
     });
 
-    const prompt=this.add.text(cx,cy+158,'SPACE  /  TAP TO RESTART',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+    const prompt=this.add.text(cx,cy+175,'SPACE  /  TAP TO RESTART',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(95).setAlpha(0);
     this.time.delayedCall(1100,()=>{prompt.setAlpha(1);this.tweens.add({targets:prompt,alpha:0.1,duration:680,yoyo:true,repeat:-1});});
   }
 

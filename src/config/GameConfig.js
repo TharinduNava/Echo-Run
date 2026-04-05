@@ -25,6 +25,11 @@ export const CONFIG = {
   // Ghost difficulty tiers (applied after ghost #N)
   GHOST_TIER2_COUNT:  3,   // ghost #4+ moves 20% faster, orange tint
   GHOST_TIER3_COUNT:  6,   // ghost #7+ moves 40% faster, red tint
+  GHOST_TIER2_SPEED:  1.2,
+  GHOST_TIER3_SPEED:  1.4,
+
+  // Ghost drift (subtle path deviation for unpredictability)
+  GHOST_DRIFT_AMOUNT: 6,   // max px offset from recorded path
 
   // Recording
   RECORD_INTERVAL:    16,
@@ -43,29 +48,34 @@ export const CONFIG = {
   TIME_WARP_PLAYER_MULT: 0.75,
 
   // Powerups
-  POWERUP_SPAWN_INTERVAL_MIN: 20000,  // ms between powerup appearances (min)
-  POWERUP_SPAWN_INTERVAL_MAX: 35000,  // ms (max)
-  POWERUP_DESPAWN_MS:         14000,  // disappears if not picked up
-  POWERUP_CLASH_DURATION:      5000,  // clash mode lasts 5s or 1 kill
-  POWERUP_PHASE_DURATION:      4000,  // phase (invincibility) lasts 4s
+  POWERUP_SPAWN_INTERVAL_MIN: 20000,
+  POWERUP_SPAWN_INTERVAL_MAX: 35000,
+  POWERUP_DESPAWN_MS:         14000,
+  POWERUP_CLASH_DURATION:      5000,
+  POWERUP_PHASE_DURATION:      4000,
+  POWERUP_DECOY_DURATION:      3000,  // decoy lasts 3s
   POWERUP_ACTIVATE_KEY:       'E',
 
   // Score zones
   SCORE_ZONE_COUNT:   3,
   SCORE_ZONE_RADIUS:  44,
-  SCORE_ZONE_MULT:    2.0,  // score multiplied while inside
+  SCORE_ZONE_MULT:    2.0,
 
   // Near-miss
-  NEAR_MISS_DIST:     18,   // px — within this = near-miss
+  NEAR_MISS_DIST:     18,
+  NEAR_MISS_COMBO_WINDOW: 4000,  // ms window for combo chain
 
   // Nerve multiplier
   NERVE_MAX_MULT:     4.0,
-  NERVE_RAMP_DIST:    55,   // start building nerve within this distance
+  NERVE_RAMP_DIST:    55,
 
   // Milestone survival thresholds (ms)
   MILESTONE_1:    30000,
   MILESTONE_2:    60000,
   MILESTONE_3:    90000,
+
+  // Ghost ink trail (floor trail showing where ghosts walked)
+  GHOST_INK_FADE_MS:  5000,  // how long ink marks persist
 
   // Difficulty presets
   DIFFICULTIES: {
@@ -89,4 +99,5 @@ export const CONFIG = {
   COLOR_CLASH:   '#ff6600',
   COLOR_PHASE:   '#00ccff',
   COLOR_ZONE:    '#ffdd00',
+  COLOR_DECOY:   '#00ff88',
 };
