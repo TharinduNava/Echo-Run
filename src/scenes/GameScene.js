@@ -72,13 +72,13 @@ export class GameScene extends Phaser.Scene {
     this._milestones = [CONFIG.MILESTONE_1, CONFIG.MILESTONE_2, CONFIG.MILESTONE_3];
     this._milestonesHit = new Set();
 
-    // Near-miss tracking
-    this._nearMissTracked = new Set(); // ghost ids that are "close" this frame
-    this._nearMissIds = new Set();     // ghost ids that triggered a near-miss event
+    // Near-miss tracking (two persistent sets swapped each frame to avoid allocation)
+    this._nearMissTracked = new Set();
+    this._nearMissWorkSet = new Set();
+    this._nearMissIds = new Set();
 
     // Stats
     this._warpUseCount = 0;
-    this._scoreMultiplier = 1.0;
 
     // Time Warp
     this.timeWarpAvailable   = true;
@@ -86,7 +86,6 @@ export class GameScene extends Phaser.Scene {
     this._warpCooldownStart  = null;
 
     // Pause
-    this._paused = false;
     this._pauseGroup = null;
 
     // Input
@@ -326,7 +325,7 @@ export class GameScene extends Phaser.Scene {
 
   // ============================================================== PAUSE
   _pause() {
-    this.state='PAUSED'; this._paused=true;
+    this.state='PAUSED';
     this.physics && this.physics.pause();
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
 
@@ -347,7 +346,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _resume() {
-    this.state='PLAYING'; this._paused=false;
+    this.state='PLAYING';
     if(this._pauseGroup){this._pauseGroup.forEach(o=>o.destroy());this._pauseGroup=null;}
   }
 
@@ -382,6 +381,8 @@ export class GameScene extends Phaser.Scene {
     const ghostMult =(this.timeWarpActive ? CONFIG.TIME_WARP_GHOST_MULT  : 1);
     const playerMult=(this.timeWarpActive ? CONFIG.TIME_WARP_PLAYER_MULT : 1);
 
+    const ghostsNow = this.ghostManager.getAllGhosts();
+
     this.player.update(delta*playerMult);
     this.recorder.record(this.player.x, this.player.y);
     this.ghostManager.update(ghostMult, delta);
@@ -390,9 +391,7 @@ export class GameScene extends Phaser.Scene {
     this.survivalTime=this.time.now - this.gameStartTime;
     this._checkMilestones();
 
-    // Score multiplier from ScoreSystem
-    const mult=this.scoreSystem.update(this.player.x, this.player.y, this.ghostManager.getAllGhosts(), delta);
-    this._scoreMultiplier=mult;
+    this.scoreSystem.update(this.player.x, this.player.y, ghostsNow, delta);
 
     // Visual updates
     this._updateAmbientParticles();
@@ -412,29 +411,32 @@ export class GameScene extends Phaser.Scene {
     // Danger proximity + near-miss
     const WARN_DIST=65, NEAR_MISS=CONFIG.NEAR_MISS_DIST;
     let anyNear=false, anyDanger=false;
-    const ghostsNow=this.ghostManager.getAllGhosts();
-    const currentNear=new Set();
+    const nextNear=this._nearMissWorkSet;
+    nextNear.clear();
 
     ghostsNow.forEach(ghost=>{
       const dist=Math.hypot(this.player.x-ghost.x, this.player.y-ghost.y);
       if(dist<WARN_DIST){ ghost.setDangerIntensity(1-dist/WARN_DIST); anyNear=true; anyDanger=true; }
       else ghost.setDangerIntensity(0);
 
-      if(dist<NEAR_MISS+12) currentNear.add(ghost);
+      if(dist<NEAR_MISS+12) nextNear.add(ghost);
     });
 
     // Near-miss: ghost was in range last frame but not this frame (just passed by)
     this._nearMissTracked.forEach(g=>{
-      if(!currentNear.has(g) && !this._nearMissIds.has(g)){
+      if(!nextNear.has(g) && !this._nearMissIds.has(g)){
         this._nearMissIds.add(g);
         this.scoreSystem.recordNearMiss();
         this.audioManager.playNearMiss();
         this._flashNearMiss();
       }
     });
-    this._nearMissTracked=currentNear;
-    // Clean up near-miss id memory
-    this._nearMissIds.forEach(g=>{ if(!ghostsNow.includes(g)) this._nearMissIds.delete(g); });
+    // Swap sets (zero allocation)
+    this._nearMissWorkSet=this._nearMissTracked;
+    this._nearMissTracked=nextNear;
+    // Clean up near-miss id memory for dead ghosts
+    const ghostSet=new Set(ghostsNow);
+    this._nearMissIds.forEach(g=>{ if(!ghostSet.has(g)) this._nearMissIds.delete(g); });
 
     this._updateBorderPulse(anyDanger);
 
@@ -453,18 +455,12 @@ export class GameScene extends Phaser.Scene {
     if(!inPhase){
       const hitGhost=CollisionSystem.check(this.player, ghostsNow);
       if(hitGhost){
-        // If Clash active, kill it
-        if(this.powerupManager.clashActive && this.powerupManager.tryClashKill(hitGhost)){
-          // Kill handled inside tryClashKill
-        } else {
-          this.onDeath(hitGhost);
-        }
+        const clashAbsorbed=this.powerupManager.clashActive && this.powerupManager.tryClashKill(hitGhost);
+        if(!clashAbsorbed) this.onDeath(hitGhost);
       }
     }
 
-    // Player phase visual tint
-    if(inPhase){ this.player.graphics.setAlpha(0.45); }
-    else { this.player.graphics.setAlpha(1); }
+    this.player.graphics.setAlpha(inPhase ? 0.45 : 1);
 
     // UI update
     const pwType   = this.powerupManager.heldType;

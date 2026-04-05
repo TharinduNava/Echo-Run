@@ -8,10 +8,9 @@ export class CollisionSystem {
 
       const dx = player.x - ghost.x;
       const dy = player.y - ghost.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const minDist = player.radius + ghost.radius;  // sum of radii
+      const minDist = player.radius + ghost.radius;
 
-      if (distance < minDist) {
+      if (dx * dx + dy * dy < minDist * minDist) {
         return ghost;
       }
     }

@@ -121,6 +121,7 @@ export class AudioManager {
   // ── Adaptive background music ─────────────────────────────
   startAdaptiveBg() {
     if (!this.enabled || !this.ctx || this._bgNode) return;
+    if (this._bgStopTime && this.ctx.currentTime < this._bgStopTime) return;
     this._bgGain = this.ctx.createGain();
     this._bgGain.gain.setValueAtTime(0.0, this.ctx.currentTime);
     this._bgGain.connect(this.ctx.destination);
@@ -167,6 +168,9 @@ export class AudioManager {
     const t = this.ctx.currentTime;
     this._bgGain.gain.linearRampToValueAtTime(0.001, t + 1.5);
     try { this._bgNode.drone.stop(t + 1.6); this._bgNode.pulse.stop(t + 1.6); } catch (e) {}
+    this._bgStopTime = t + 1.6;
     this._bgNode = null; this._bgGain = null;
   }
+
+
 }

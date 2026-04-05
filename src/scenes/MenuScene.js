@@ -57,7 +57,6 @@ export class MenuScene extends Phaser.Scene {
     this._diffGfx=this.add.graphics().setDepth(10);
     this._diffTexts={};
     const diffY=cy+100;
-    this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0);
     this._fade(this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1200);
 
     const diffs=['easy','normal','hard','nightmare'];
@@ -106,7 +105,6 @@ export class MenuScene extends Phaser.Scene {
     // Input
     this.input.keyboard.once('keydown-SPACE',()=>this._startGame());
     this.input.once('pointerdown',()=>this._startGame());
-    this.time.addEvent({delay:16,loop:true,callback:this._tick,callbackScope:this});
   }
 
   _fade(obj,delay) {
@@ -145,7 +143,7 @@ export class MenuScene extends Phaser.Scene {
     });
   }
 
-  _tick() {
+  update() {
     const now=this.time.now;
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
 

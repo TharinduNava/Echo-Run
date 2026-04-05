@@ -49,7 +49,6 @@ export class GhostManager {
     this.audioManager?.playGhostSpawn();
     this.waveAnnouncer?.announce(this.ghostCount);
 
-    console.log(`Echo #${this.ghostCount} spawned — ${behindMs / 1000}s behind`);
     this._scheduleSpawn(this.getDynamicInterval());
   }
 
@@ -77,7 +76,9 @@ export class GhostManager {
 
   update(timeWarpMultiplier = 1, delta = 16) {
     this.ghosts.forEach(g => g.update(timeWarpMultiplier, delta));
-    this.ghosts = this.ghosts.filter(g => g.alive);
+    for (let i = this.ghosts.length - 1; i >= 0; i--) {
+      if (!this.ghosts[i].alive) this.ghosts.splice(i, 1);
+    }
     this._updateBeeps(this.audioManager);
   }
 

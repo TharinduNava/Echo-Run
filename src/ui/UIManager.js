@@ -5,6 +5,7 @@ export class UIManager {
     this.scene = scene;
     const mono = { fontFamily: 'Orbitron, monospace', fontSize: '13px', color: CONFIG.COLOR_CYAN };
     const p    = CONFIG.ARENA_PADDING;
+    const cx   = CONFIG.CANVAS_WIDTH / 2;
 
     // ── Top-left panel: time + echoes ─────────────────
     this._panelTL = scene.add.graphics().setDepth(48);
@@ -14,6 +15,7 @@ export class UIManager {
 
     // ── Top-center: echo countdown + overdrive ────────
     this._panelTC = scene.add.graphics().setDepth(48);
+    this._drawPanel(this._panelTC, cx - 110, p + 4, 220, 52);
     this.echoCountdownText = scene.add.text(
       CONFIG.CANVAS_WIDTH / 2, p + 14, '',
       { ...mono, fontSize: '12px', color: '#ff8c00', align: 'center' }
@@ -124,16 +126,8 @@ export class UIManager {
       this.overdriveText.setText('');
     }
 
-    // ── Top-center panel ──────────────────────────────────
-    const cx = CONFIG.CANVAS_WIDTH / 2;
-    const p  = CONFIG.ARENA_PADDING;
-    this._panelTC.clear();
-    this._panelTC.fillStyle(0x000000, 0.5);
-    this._panelTC.fillRoundedRect(cx - 110, p + 4, 220, 52, 6);
-    this._panelTC.lineStyle(1, 0x1e3a5f, 0.8);
-    this._panelTC.strokeRoundedRect(cx - 110, p + 4, 220, 52, 6);
-
     // ── Nerve multiplier ──────────────────────────────────
+    const p   = CONFIG.ARENA_PADDING;
     const trX = CONFIG.CANVAS_WIDTH - p - 4;
     const nerveStr = `NERVE ×${nerveMultiplier.toFixed(1)}`;
     this.nerveText.setText(nerveStr);
@@ -157,13 +151,14 @@ export class UIManager {
     }
 
     // ── Powerup HUD (bottom-left) ─────────────────────────
-    const bpCol = heldPowerup === 'clash' ? CONFIG.COLOR_CLASH : CONFIG.COLOR_PHASE;
     if (heldPowerup && !powerupActive) {
+      const bpCol = heldPowerup === 'clash' ? CONFIG.COLOR_CLASH : CONFIG.COLOR_PHASE;
       const icon = heldPowerup === 'clash' ? '💀 CLASH' : '🛡 PHASE';
       this.powerupText.setText(icon).setColor(bpCol).setAlpha(0.9 + 0.1 * Math.sin(now / 200));
       this.powerupKeyHint.setText('Press E to activate').setColor('#557788');
       this.powerupBar.clear();
     } else if (powerupActive) {
+      const bpCol = powerupActive === 'clash' ? CONFIG.COLOR_CLASH : CONFIG.COLOR_PHASE;
       const icon = powerupActive === 'clash' ? 'CLASH ACTIVE' : 'PHASE ACTIVE';
       this.powerupText.setText(icon).setColor(bpCol).setAlpha(1);
       this.powerupKeyHint.setText('');
@@ -172,7 +167,7 @@ export class UIManager {
       this.powerupBar.clear();
       this.powerupBar.fillStyle(0x111111, 0.8);
       this.powerupBar.fillRect(bpX + 10, bpY + 40, 120, 5);
-      this.powerupBar.fillStyle(bpCol === CONFIG.COLOR_CLASH ? 0xff6600 : 0x00ccff, 0.9);
+      this.powerupBar.fillStyle(powerupActive === 'clash' ? 0xff6600 : 0x00ccff, 0.9);
       this.powerupBar.fillRect(bpX + 10, bpY + 40, 120 * powerupProgress, 5);
     } else {
       this.powerupText.setText('NONE').setColor('#334455').setAlpha(1);
