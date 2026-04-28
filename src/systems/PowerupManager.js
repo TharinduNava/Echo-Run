@@ -10,6 +10,7 @@ export class PowerupManager {
     this._held        = null;
     this._heldTimer   = null;
     this.active       = false;
+    this._clashDurationOverride = null;
 
     // Decoy state
     this._decoyGfx    = null;
@@ -54,7 +55,7 @@ export class PowerupManager {
   update(playerX, playerY) {
     if (this._current && this._current.alive) {
       this._current.update();
-      if (this._current.overlaps(playerX, playerY) && this._held === null) {
+      if (this._current.overlaps(playerX, playerY) && !this.active) {
         this._pickup();
       }
     }
@@ -91,12 +92,15 @@ export class PowerupManager {
     return true;
   }
 
+  setClashDurationOverride(ms) { this._clashDurationOverride = ms; }
+
   _activateClash(ghosts, onClashKill) {
     this._clashActive    = true;
     this._clashKillCount = 0;
     this._clashKillCb    = onClashKill;
 
-    this._heldTimer = this.scene.time.delayedCall(CONFIG.POWERUP_CLASH_DURATION, () => {
+    const clashDur = this._clashDurationOverride ?? CONFIG.POWERUP_CLASH_DURATION;
+    this._heldTimer = this.scene.time.delayedCall(clashDur, () => {
       this._endClash(false);
     });
   }
@@ -203,7 +207,7 @@ export class PowerupManager {
   get activeProgress() {
     if (!this.active || !this._heldTimer) return 0;
     let dur = CONFIG.POWERUP_PHASE_DURATION;
-    if (this._clashActive) dur = CONFIG.POWERUP_CLASH_DURATION;
+    if (this._clashActive) dur = this._clashDurationOverride ?? CONFIG.POWERUP_CLASH_DURATION;
     if (this._decoyActive) dur = CONFIG.POWERUP_DECOY_DURATION;
     return Phaser.Math.Clamp(this._heldTimer.getRemaining() / dur, 0, 1);
   }

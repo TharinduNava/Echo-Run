@@ -20,6 +20,7 @@ export const CONFIG = {
   GHOST_COLOR:        0xa855f7,
   GHOST_ALPHA:        0.7,
   GHOST_FADE_IN_MS:   600,
+  GHOST_MAX_AGE_MS:   50000,
   GHOST_LOOP_PATH:    true,
 
   // Ghost difficulty tiers (applied after ghost #N)
@@ -62,7 +63,7 @@ export const CONFIG = {
   SCORE_ZONE_MULT:    2.0,
 
   // Near-miss
-  NEAR_MISS_DIST:     18,
+  NEAR_MISS_DIST:     32,
   NEAR_MISS_COMBO_WINDOW: 4000,  // ms window for combo chain
 
   // Nerve multiplier

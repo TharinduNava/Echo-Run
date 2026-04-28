@@ -49,14 +49,20 @@ export class MenuScene extends Phaser.Scene {
     this._fade(this.add.text(cx,cy+26,'"Your past is your greatest enemy."',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#8ca2c0',align:'center'}).setOrigin(0.5).setDepth(10).setAlpha(0),900);
 
     // Controls
-    this._fade(this.add.text(cx,cy+56,'WASD/ARROWS — MOVE   SHIFT — WARP   E — POWERUP   ESC — PAUSE',{
-      fontFamily:'Share Tech Mono, monospace',fontSize:'10px',color:'#7b94b5',align:'center'
+    this._fade(this.add.text(cx,cy+52,'CONTROLS',{
+      fontFamily:'Orbitron, monospace',fontSize:'8px',color:'#445566',align:'center'
+    }).setOrigin(0.5).setDepth(10).setAlpha(0),1000);
+    this._fade(this.add.text(cx,cy+65,'WASD / ARROWS — MOVE     SHIFT — TIME WARP',{
+      fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#8899bb',align:'center'
     }).setOrigin(0.5).setDepth(10).setAlpha(0),1100);
+    this._fade(this.add.text(cx,cy+82,'E — USE POWERUP     ESC — PAUSE',{
+      fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#8899bb',align:'center'
+    }).setOrigin(0.5).setDepth(10).setAlpha(0),1150);
 
     // ── Difficulty selector ───────────────────────────────
     this._diffGfx=this.add.graphics().setDepth(10);
     this._diffTexts={};
-    const diffY=cy+100;
+    const diffY=cy+110;
     this._fade(this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1200);
 
     const diffs=['easy','normal','hard','nightmare'];
@@ -71,28 +77,38 @@ export class MenuScene extends Phaser.Scene {
       btn.on('pointerover',()=>{ if(d!==this._difficulty) btn.setColor('#a8bddd'); });
       btn.on('pointerout', ()=>{ btn.setColor(d===this._difficulty?CONFIG.COLOR_CYAN:'#7b94b5'); });
       btn.on('pointerdown',()=>{ this._setDifficulty(d); });
-      this._diffTexts[d]=btn;
+      this._diffTexts[d]={text:btn,bx,by};
       this._fade(btn,1300+i*80);
     });
+    this._setDifficulty(this._difficulty);
 
     // ── Leaderboard ───────────────────────────────────────
     const lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
     if(lb.length>0){
       // Show top-10 in two columns if 6+ entries
-      const lbY=cy+155;
+      const lbY=cy+170;
       this._fade(this.add.text(cx,lbY,'TOP SCORES',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1500);
       const shown=lb.slice(0,10);
       const useTwo=shown.length>5;
       shown.forEach((score,i)=>{
-        const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:i<5?'#667788':'#445566';
-        const col2 = i===0?'#aaaa00':i<3?'#007799':i<5?'#334455':'#223344';
-        const col3 = i===0?'#888800':i<3?'#005566':i<5?'#223344':'#111122';
+        const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:i<5?'#8899bb':'#667788';
         const cx2=useTwo?(i<5?cx-70:cx+60):cx;
         const row=useTwo?(i<5?i:i-5):i;
         this._fade(this.add.text(cx2,lbY+14+row*15,`#${i+1}  ${(score/1000).toFixed(2)}s`,{
           fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:col,align:'center'
         }).setOrigin(0.5).setDepth(10).setAlpha(0),1600+i*80);
       });
+      const clearBtn=this.add.text(cx,lbY+14+Math.min(shown.length,5)*15+10,'CLEAR SCORES',{
+        fontFamily:'Share Tech Mono, monospace',fontSize:'9px',color:'#334455'
+      }).setOrigin(0.5).setDepth(10).setAlpha(0).setInteractive({useHandCursor:true});
+      clearBtn.on('pointerover',()=>clearBtn.setColor('#667788'));
+      clearBtn.on('pointerout', ()=>clearBtn.setColor('#334455'));
+      clearBtn.on('pointerdown',()=>{
+        localStorage.removeItem('echorun_lb');
+        localStorage.removeItem('echorun_best');
+        this.scene.restart();
+      });
+      this._fade(clearBtn,1900);
     }
 
     // ── Start prompt ──────────────────────────────────────
@@ -122,9 +138,17 @@ export class MenuScene extends Phaser.Scene {
   _setDifficulty(d) {
     this._difficulty=d;
     localStorage.setItem('echorun_difficulty',d);
-    Object.entries(this._diffTexts).forEach(([k,t])=>{
-      t.setColor(k===d?CONFIG.COLOR_CYAN:'#7b94b5');
+    Object.entries(this._diffTexts).forEach(([k,{text}])=>{
+      text.setColor(k===d?CONFIG.COLOR_CYAN:'#7b94b5');
     });
+    this._diffGfx.clear();
+    const active=this._diffTexts[d];
+    if(active){
+      this._diffGfx.lineStyle(1.5,CONFIG.COLOR_CYAN,0.8);
+      this._diffGfx.strokeRoundedRect(active.bx-38,active.by-10,76,22,4);
+      this._diffGfx.fillStyle(CONFIG.COLOR_CYAN,0.06);
+      this._diffGfx.fillRoundedRect(active.bx-38,active.by-10,76,22,4);
+    }
   }
 
   _buildTitle(cx,cy) {

@@ -15,26 +15,28 @@ export class WaveAnnouncer {
 
   announce(ghostNumber) {
     const W   = CONFIG.CANVAS_WIDTH;
-    const cy  = CONFIG.CANVAS_HEIGHT / 2;
+    const H   = CONFIG.CANVAS_HEIGHT;
+    const p   = CONFIG.ARENA_PADDING;
+    const by  = H - p - 50;
     const msg = MESSAGES[(ghostNumber - 1) % MESSAGES.length].replace('{n}', ghostNumber);
 
-    // Dark sweep banner
+    // Dark sweep banner at bottom strip
     const banner = this.scene.add.graphics().setDepth(70);
     banner.fillStyle(0x000000, 0.7);
-    banner.fillRect(0, cy - 28, W, 56);
+    banner.fillRect(0, by - 20, W, 40);
     banner.lineStyle(1, 0xa855f7, 0.4);
-    banner.beginPath(); banner.moveTo(0, cy - 28); banner.lineTo(W, cy - 28); banner.strokePath();
-    banner.beginPath(); banner.moveTo(0, cy + 28); banner.lineTo(W, cy + 28); banner.strokePath();
+    banner.beginPath(); banner.moveTo(0, by - 20); banner.lineTo(W, by - 20); banner.strokePath();
+    banner.beginPath(); banner.moveTo(0, by + 20); banner.lineTo(W, by + 20); banner.strokePath();
 
     // Text
-    const label = this.scene.add.text(W / 2, cy, msg, {
-      fontFamily: 'Orbitron, monospace', fontSize: '15px',
+    const label = this.scene.add.text(W / 2, by, msg, {
+      fontFamily: 'Orbitron, monospace', fontSize: '13px',
       color: CONFIG.COLOR_PURPLE, align: 'center',
       stroke: '#000000', strokeThickness: 6
     }).setOrigin(0.5).setDepth(71).setAlpha(0);
 
-    const echoPfx = this.scene.add.text(W / 2, cy - 14, `// ECHO SYSTEM //`, {
-      fontFamily: 'Share Tech Mono, monospace', fontSize: '10px',
+    const echoPfx = this.scene.add.text(W / 2, by - 12, `// ECHO SYSTEM //`, {
+      fontFamily: 'Share Tech Mono, monospace', fontSize: '9px',
       color: '#334455', align: 'center'
     }).setOrigin(0.5).setDepth(71).setAlpha(0);
 

@@ -30,6 +30,8 @@ export class Ghost {
     this._driftTargetX = 0;
     this._driftTargetY = 0;
     this._driftTimer = 0;
+    this._inkTimer   = 0;
+    this._expired    = false;
 
     // Aging: how long this ghost has been alive (drives visual intensity)
     this._age = 0;
@@ -96,8 +98,16 @@ export class Ghost {
 
     this._warpSlowed  = timeWarpMultiplier < 0.5;
     this._pulseAngle += 0.05;
-    this._eyeFlicker  = Math.random();
+    this._eyeFlicker += (Math.random() - this._eyeFlicker) * 0.12;
     this._age        += delta;
+
+    if (!this._expired && this._age > CONFIG.GHOST_MAX_AGE_MS) {
+      this._expired = true;
+      this.scene.tweens.add({
+        targets: this, alpha: 0, duration: 1200, ease: 'Power2',
+        onComplete: () => { this.alive = false; }
+      });
+    }
 
     this._updateDrift(delta);
 
@@ -123,14 +133,18 @@ export class Ghost {
     const span  = next.t - curr.t;
     const lerpT = span > 0 ? Phaser.Math.Clamp((this._pathT - curr.t) / span, 0, 1) : 0;
 
-    // Apply drift offset on top of exact path position
-    this.x = Phaser.Math.Linear(curr.x, next.x, lerpT) + this._driftX;
-    this.y = Phaser.Math.Linear(curr.y, next.y, lerpT) + this._driftY;
+    // Apply drift offset — scales to zero near player to prevent unfair hits
+    const driftScale = 1 - this._dangerIntensity * 0.85;
+    this.x = Phaser.Math.Linear(curr.x, next.x, lerpT) + this._driftX * driftScale;
+    this.y = Phaser.Math.Linear(curr.y, next.y, lerpT) + this._driftY * driftScale;
 
     // Clamp within arena
     const pad = CONFIG.ARENA_PADDING + this.radius;
     this.x = Phaser.Math.Clamp(this.x, pad, CONFIG.CANVAS_WIDTH  - pad);
     this.y = Phaser.Math.Clamp(this.y, pad, CONFIG.CANVAS_HEIGHT - pad);
+
+    this.trailHistory.push({ x: this.x, y: this.y });
+    if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) this.trailHistory.shift();
 
     this.draw();
   }
@@ -148,8 +162,6 @@ export class Ghost {
     const col = this._getTierColor();
 
     // Trail — longer and brighter for higher tiers
-    this.trailHistory.push({ x: this.x, y: this.y });
-    if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) this.trailHistory.shift();
     const tMult = this._warpSlowed ? 2.0 : 1;
     const trailBrightness = 1 + ageFactor * 0.5 + (this.tier - 1) * 0.3;
     this.trailHistory.forEach((pt, i) => {

@@ -290,13 +290,16 @@ export class GameScene extends Phaser.Scene {
 
   // =============================================================== FLOATING TEXT
   _showFloatingText(x, y, text, color = '#ffffff', fontSize = '12px') {
-    const t = this.add.text(x, y, text, {
+    const pad = CONFIG.ARENA_PADDING;
+    const cx  = Phaser.Math.Clamp(x, pad + 40, CONFIG.CANVAS_WIDTH  - pad - 40);
+    const cy  = Phaser.Math.Clamp(y, pad + 20, CONFIG.CANVAS_HEIGHT - pad - 60);
+    const t = this.add.text(cx, cy, text, {
       fontFamily: 'Orbitron, monospace', fontSize, color,
       stroke: '#000000', strokeThickness: 4, align: 'center'
     }).setOrigin(0.5).setDepth(89).setAlpha(0);
     this.tweens.add({
       targets: t, alpha: { from: 1, to: 0 },
-      y: { from: y, to: y - 50 },
+      y: { from: cy, to: cy - 50 },
       duration: 1100, ease: 'Power2',
       onComplete: () => t.destroy()
     });
@@ -405,12 +408,14 @@ export class GameScene extends Phaser.Scene {
     const overlay=this.add.rectangle(cx,cy,W,H,0x000000).setAlpha(0.55).setDepth(200);
     group.push(overlay);
     const panel=this.add.graphics().setDepth(201);
-    panel.fillStyle(0x000000,0.9); panel.fillRoundedRect(cx-160,cy-110,320,220,12);
-    panel.lineStyle(2,0x00f5ff,0.5); panel.strokeRoundedRect(cx-160,cy-110,320,220,12);
+    panel.fillStyle(0x000000,0.9); panel.fillRoundedRect(cx-160,cy-120,320,250,12);
+    panel.lineStyle(2,0x00f5ff,0.5); panel.strokeRoundedRect(cx-160,cy-120,320,250,12);
     group.push(panel);
-    const title=this.add.text(cx,cy-78,'PAUSED',{fontFamily:'Orbitron, monospace',fontSize:'24px',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(202);
-    const stats=this.add.text(cx,cy-30,`TIME: ${(this.survivalTime/1000).toFixed(2)}s\nECHOES: ${this.ghostManager.ghostCount}`,{fontFamily:'Share Tech Mono, monospace',fontSize:'14px',color:'#aabbcc',align:'center'}).setOrigin(0.5).setDepth(202);
-    const hint=this.add.text(cx,cy+60,'ESC / SPACE — RESUME',{fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:'#334455'}).setOrigin(0.5).setDepth(202);
+    const title=this.add.text(cx,cy-88,'PAUSED',{fontFamily:'Orbitron, monospace',fontSize:'24px',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(202);
+    const warpStr=this.timeWarpActive?'WARP: ACTIVE':this.timeWarpAvailable?'WARP: READY':'WARP: RECHARGING';
+    const pwStr=this.powerupManager.heldType?`HELD: ${this.powerupManager.heldType.toUpperCase()}`:'HELD: NONE';
+    const stats=this.add.text(cx,cy-30,`TIME: ${(this.survivalTime/1000).toFixed(2)}s\nECHOES: ${this.ghostManager.ghostCount}\n${warpStr}\n${pwStr}`,{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#aabbcc',align:'center'}).setOrigin(0.5).setDepth(202);
+    const hint=this.add.text(cx,cy+90,'ESC / SPACE — RESUME',{fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:'#334455'}).setOrigin(0.5).setDepth(202);
     group.push(title,stats,hint);
     this._pauseGroup=group;
   }
@@ -431,6 +436,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _triggerMilestone(ms) {
+    this.state = 'PAUSED';
     this.audioManager.playMilestone();
     this.scoreSystem.applyMilestoneBonus();
 
@@ -464,7 +470,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Show 3 passive buff choices after each milestone */
   _showBuffChoice() {
-    if (this.state !== 'PLAYING') return;
+    if (this.state === 'DEAD') return;
     this.state = 'PAUSED';
 
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
@@ -479,50 +485,60 @@ export class GameScene extends Phaser.Scene {
     group.push(overlay);
 
     const panel=this.add.graphics().setDepth(201);
-    panel.fillStyle(0x000000,0.92); panel.fillRoundedRect(cx-220,cy-120,440,240,14);
-    panel.lineStyle(2,0xffd700,0.6); panel.strokeRoundedRect(cx-220,cy-120,440,240,14);
+    panel.fillStyle(0x000000,0.92); panel.fillRoundedRect(cx-240,cy-130,480,270,14);
+    panel.lineStyle(2,0xffd700,0.6); panel.strokeRoundedRect(cx-240,cy-130,480,270,14);
     group.push(panel);
 
-    const title=this.add.text(cx,cy-98,'CHOOSE YOUR BUFF',{fontFamily:'Orbitron, monospace',fontSize:'16px',color:'#ffd700'}).setOrigin(0.5).setDepth(202);
+    const title=this.add.text(cx,cy-112,'CHOOSE YOUR BUFF',{fontFamily:'Orbitron, monospace',fontSize:'16px',color:'#ffd700'}).setOrigin(0.5).setDepth(202);
     group.push(title);
 
     buffs.forEach((b, i) => {
-      const bx = cx - 130 + i * 130;
-      const by = cy - 20;
+      const bx = cx - 150 + i * 150;
+      const by = cy - 10;
       const bg = this.add.graphics().setDepth(202);
-      bg.fillStyle(0x111111, 0.9); bg.fillRoundedRect(bx - 55, by - 40, 110, 90, 8);
-      bg.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(b.color).color, 0.6);
-      bg.strokeRoundedRect(bx - 55, by - 40, 110, 90, 8);
+      bg.fillStyle(0x111111, 0.9); bg.fillRoundedRect(bx - 60, by - 50, 120, 110, 8);
+      bg.lineStyle(2, Phaser.Display.Color.HexStringToColor(b.color).color, 0.7);
+      bg.strokeRoundedRect(bx - 60, by - 50, 120, 110, 8);
       group.push(bg);
 
-      const numT = this.add.text(bx, by - 22, `[${i+1}]`, {fontFamily:'Orbitron, monospace',fontSize:'11px',color:'#445566'}).setOrigin(0.5).setDepth(203);
-      const lbl  = this.add.text(bx, by + 2, b.label, {fontFamily:'Orbitron, monospace',fontSize:'10px',color:b.color}).setOrigin(0.5).setDepth(203);
-      const dsc  = this.add.text(bx, by + 24, b.desc, {fontFamily:'Share Tech Mono, monospace',fontSize:'9px',color:'#aabbcc',align:'center',wordWrap:{width:100}}).setOrigin(0.5).setDepth(203);
+      const numT = this.add.text(bx, by - 32, `[${i+1}]`, {fontFamily:'Orbitron, monospace',fontSize:'13px',color:b.color}).setOrigin(0.5).setDepth(203);
+      const lbl  = this.add.text(bx, by,      b.label,    {fontFamily:'Orbitron, monospace',fontSize:'13px',color:b.color}).setOrigin(0.5).setDepth(203);
+      const dsc  = this.add.text(bx, by + 26, b.desc,     {fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#aabbcc',align:'center',wordWrap:{width:110}}).setOrigin(0.5).setDepth(203);
       group.push(numT, lbl, dsc);
     });
 
     const cleanup = (buffKey) => {
       group.forEach(o => o.destroy());
-      keyListeners.forEach(k => k.destroy());
       this._activePBuff = buffKey;
       this._applyImmediateBuff(buffKey);
       this.state = 'PLAYING';
     };
 
-    const keyListeners = [
-      this.input.keyboard.addKey('ONE').on('down', () => cleanup(buffs[0].key)),
-      this.input.keyboard.addKey('TWO').on('down', () => cleanup(buffs[1].key)),
-      this.input.keyboard.addKey('THREE').on('down', () => cleanup(buffs[2].key)),
-      this.input.keyboard.addKey('NUMPAD_ONE').on('down', () => cleanup(buffs[0].key)),
-      this.input.keyboard.addKey('NUMPAD_TWO').on('down', () => cleanup(buffs[1].key)),
-      this.input.keyboard.addKey('NUMPAD_THREE').on('down', () => cleanup(buffs[2].key)),
-    ];
+    const onKey = (buffKey) => {
+      this.input.keyboard.off('keydown-ONE',          onOne);
+      this.input.keyboard.off('keydown-TWO',          onTwo);
+      this.input.keyboard.off('keydown-THREE',        onThree);
+      this.input.keyboard.off('keydown-NUMPAD_ONE',   onOne);
+      this.input.keyboard.off('keydown-NUMPAD_TWO',   onTwo);
+      this.input.keyboard.off('keydown-NUMPAD_THREE', onThree);
+      cleanup(buffKey);
+    };
+    const onOne   = () => onKey(buffs[0].key);
+    const onTwo   = () => onKey(buffs[1].key);
+    const onThree = () => onKey(buffs[2].key);
+
+    this.input.keyboard.on('keydown-ONE',          onOne);
+    this.input.keyboard.on('keydown-TWO',          onTwo);
+    this.input.keyboard.on('keydown-THREE',        onThree);
+    this.input.keyboard.on('keydown-NUMPAD_ONE',   onOne);
+    this.input.keyboard.on('keydown-NUMPAD_TWO',   onTwo);
+    this.input.keyboard.on('keydown-NUMPAD_THREE', onThree);
   }
 
   /** Immediately apply the picked buff effect */
   _applyImmediateBuff(buff) {
     if (buff === 'clashDuration') {
-      CONFIG.POWERUP_CLASH_DURATION = 8000;  // 5s → 8s
+      this.powerupManager.setClashDurationOverride(8000);
     }
     // nerveDecay and warpRecharge are applied in update() / activateTimeWarp()
   }
@@ -544,7 +560,7 @@ export class GameScene extends Phaser.Scene {
     this.survivalTime=this.time.now - this.gameStartTime;
     this._checkMilestones();
 
-    this.scoreSystem.update(this.player.x, this.player.y, ghostsNow, delta);
+    const scoreMult = this.scoreSystem.update(this.player.x, this.player.y, ghostsNow, delta);
 
     // Visual updates
     this._updateAmbientParticles();
@@ -594,7 +610,8 @@ export class GameScene extends Phaser.Scene {
         // Warp near-miss recharge: if warp on cooldown, shave 20% off remaining time
         if (this._warpRechargeReady && this._warpCooldownStart !== null) {
           const elapsed = this.time.now - this._warpCooldownStart;
-          this._warpCooldownStart = this.time.now - elapsed - CONFIG.TIME_WARP_COOLDOWN * 0.2;
+          const newElapsed = elapsed + CONFIG.TIME_WARP_COOLDOWN * 0.2;
+          this._warpCooldownStart = this.time.now - Math.min(newElapsed, CONFIG.TIME_WARP_COOLDOWN);
           this._showFloatingText(this.player.x, this.player.y - 30, 'WARP –20%', '#00ffcc', '10px');
         }
 
@@ -658,7 +675,8 @@ export class GameScene extends Phaser.Scene {
       this.ghostManager.getTimeUntilNextSpawn(), this.ghostManager.nextGhostNumber,
       this.ghostManager.isOverdrive,
       this.timeWarpAvailable, this.timeWarpActive, warpProgress,
-      this.scoreSystem.nerveMultiplier, pwType, pwActive, pwProg
+      this.scoreSystem.nerveMultiplier, pwType, pwActive, pwProg,
+      scoreMult
     );
   }
 
@@ -738,13 +756,14 @@ export class GameScene extends Phaser.Scene {
       {t:`NEAR-MISSES: ${this.scoreSystem.stats.nearMisses}  ${comboText}`,c:'#ff8c00',s:'12px'},
       {t:`WARP USED: ${this.scoreSystem.stats.warpUses}  |  CLASHES: ${this.scoreSystem.stats.clashKills}`,c:'#00f5ff',s:'12px'},
       {t:`NERVE PEAK: ×${(this.scoreSystem.nerveMultiplier).toFixed(1)}  |  POWERUPS: ${this.scoreSystem.stats.powerupsCollected}`,c:'#aabbcc',s:'12px'},
+      {t:this._difficulty.toUpperCase(),c:'#334455',s:'10px'},
     ];
     stats.forEach(({t,c,s},i)=>{
-      const el=this.add.text(cx,cy-100+i*38,t,{fontFamily:'Share Tech Mono, monospace',fontSize:s,color:c,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
-      this.time.delayedCall(400+i*140,()=>{this.tweens.add({targets:el,alpha:1,y:{from:cy-80+i*38,to:cy-100+i*38},duration:260,ease:'Back.easeOut'});});
+      const el=this.add.text(cx,cy-105+i*30,t,{fontFamily:'Share Tech Mono, monospace',fontSize:s,color:c,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+      this.time.delayedCall(400+i*120,()=>{this.tweens.add({targets:el,alpha:1,y:{from:cy-85+i*30,to:cy-105+i*30},duration:260,ease:'Back.easeOut'});});
     });
 
-    const prompt=this.add.text(cx,cy+175,'SPACE  /  TAP TO RESTART',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+    const prompt=this.add.text(cx,cy+160,'SPACE  /  TAP TO RESTART',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(95).setAlpha(0);
     this.time.delayedCall(1100,()=>{prompt.setAlpha(1);this.tweens.add({targets:prompt,alpha:0.1,duration:680,yoyo:true,repeat:-1});});
   }
 
