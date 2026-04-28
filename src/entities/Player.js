@@ -7,6 +7,8 @@ export class Player {
     this.y        = CONFIG.CANVAS_HEIGHT / 2;
     this.vx       = 0;
     this.vy       = 0;
+    this._velX    = 0;
+    this._velY    = 0;
     this.radius   = CONFIG.PLAYER_RADIUS;
     this.alive    = true;
     this.trailHistory = [];
@@ -49,8 +51,13 @@ export class Player {
 
     if (dx !== 0 && dy !== 0) { const l = Math.sqrt(dx*dx + dy*dy); dx /= l; dy /= l; }
 
-    this.vx = dx * CONFIG.PLAYER_SPEED;
-    this.vy = dy * CONFIG.PLAYER_SPEED;
+    const targetVX = dx * CONFIG.PLAYER_SPEED;
+    const targetVY = dy * CONFIG.PLAYER_SPEED;
+    const accelRate = Math.min(1, 14 * dt);
+    this._velX += (targetVX - this._velX) * accelRate;
+    this._velY += (targetVY - this._velY) * accelRate;
+    this.vx = this._velX;
+    this.vy = this._velY;
 
     this.x = Phaser.Math.Clamp(this.x + this.vx * dt, this.minX, this.maxX);
     this.y = Phaser.Math.Clamp(this.y + this.vy * dt, this.minY, this.maxY);
@@ -70,6 +77,7 @@ export class Player {
   }
 
   draw() {
+    if (!this.alive) return;
     this.graphics.clear();
     const g    = this.graphics;
     const r    = this.radius;

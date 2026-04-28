@@ -85,9 +85,9 @@ export class GhostManager {
     const ms = this.getTimeUntilNextSpawn();
     if (ms < 0) return;
     let step = -1;
-    if (ms < 1100)      step = 2;
-    else if (ms < 2100) step = 1;
-    else if (ms < 3100) step = 0;
+    if (ms < 500)       step = 2;
+    else if (ms < 1500) step = 1;
+    else if (ms < 2500) step = 0;
     if (step !== -1 && step !== this._lastBeepStep) {
       audioManager?.playCountdownBeep(step);
       this._lastBeepStep = step;
@@ -121,19 +121,26 @@ export class GhostManager {
 
     this.ghosts.forEach(g => {
       g.update(timeWarpMultiplier, delta);
-      // Record ink position every ~5 frames (80ms)
-      if (now % 80 < delta) this._recordInk(g);
+      g._inkTimer = (g._inkTimer || 0) + delta;
+      if (g._inkTimer >= 80) { this._recordInk(g); g._inkTimer -= 80; }
     });
 
     for (let i = this.ghosts.length - 1; i >= 0; i--) {
-      if (!this.ghosts[i].alive) this.ghosts.splice(i, 1);
+      if (!this.ghosts[i].alive) {
+        const wasExpired = this.ghosts[i]._expired;
+        this.ghosts.splice(i, 1);
+        if (wasExpired) {
+          this.ghostCount--;
+          this._scheduleSpawn(this.getDynamicInterval());
+        }
+      }
     }
 
     this._drawInkTrail(now);
     this._updateBeeps(this.audioManager);
   }
 
-  getAllGhosts()  { return this.ghosts; }
+  getAllGhosts()  { return [...this.ghosts]; }
   stop()         { this.active = false; }
 
   destroyAll() {

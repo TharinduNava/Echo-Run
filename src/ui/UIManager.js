@@ -9,9 +9,10 @@ export class UIManager {
 
     // ── Top-left panel: time + echoes ─────────────────
     this._panelTL = scene.add.graphics().setDepth(48);
-    this._drawPanel(this._panelTL, p + 4, p + 4, 150, 52);
+    this._drawPanel(this._panelTL, p + 4, p + 4, 150, 70);
     this.timeText  = scene.add.text(p + 14, p + 12, 'TIME: 0.00', mono).setDepth(50);
     this.ghostText = scene.add.text(p + 14, p + 32, 'ECHOES: 0', { ...mono, color: CONFIG.COLOR_PURPLE }).setDepth(50);
+    this.scoreText = scene.add.text(p + 14, p + 50, 'SCORE \xd71.0', { ...mono, fontSize: '10px', color: CONFIG.COLOR_GOLD }).setDepth(50);
 
     // ── Top-center: echo countdown + overdrive ────────
     this._panelTC = scene.add.graphics().setDepth(48);
@@ -33,6 +34,9 @@ export class UIManager {
       ...mono, fontSize: '11px', color: '#ff3355', align: 'center'
     }).setOrigin(0.5).setDepth(50);
     this.nerveBar = scene.add.graphics().setDepth(50);
+    this.nerveSubLabel = scene.add.text(trX - 70, p + 44, 'PROXIMITY BONUS', {
+      fontFamily: 'Share Tech Mono, monospace', fontSize: '7px', color: '#334455', align: 'center'
+    }).setOrigin(0.5).setDepth(50);
 
     // ── Bottom-left: held powerup ─────────────────────
     const bpX = p + 4;
@@ -54,11 +58,11 @@ export class UIManager {
     const wx = CONFIG.CANVAS_WIDTH - p - 8;
     const wy = CONFIG.CANVAS_HEIGHT - p - 8;
     this._panelBR = scene.add.graphics().setDepth(48);
-    this._drawPanel(this._panelBR, wx - 120, wy - 44, 128, 50);
+    this._drawPanel(this._panelBR, wx - 124, wy - 48, 132, 54);
     this.warpLabel      = scene.add.text(wx - 58, wy - 36, 'SHIFT', { ...mono, fontSize: '10px', color: '#445566' }).setOrigin(0.5).setDepth(52);
     this.warpStatusText = scene.add.text(wx - 58, wy - 20, 'WARP',  { ...mono, fontSize: '11px', color: CONFIG.COLOR_CYAN }).setOrigin(0.5).setDepth(52);
     this._warpRingGfx = scene.add.graphics().setDepth(52);
-    this._warpRX = wx - 18; this._warpRY = wy - 22; this._warpRad = 16;
+    this._warpRX = wx - 20; this._warpRY = wy - 22; this._warpRad = 20;
     this._drawWarpRing(1, true, false);
   }
 
@@ -97,9 +101,14 @@ export class UIManager {
 
   update(survivalMs, ghostCount, timeUntilNextSpawnMs, nextGhostNumber, isOverdrive,
          timeWarpAvailable, timeWarpActive, warpCooldownProgress,
-         nerveMultiplier = 1.0, heldPowerup = null, powerupActive = false, powerupProgress = 0) {
+         nerveMultiplier = 1.0, heldPowerup = null, powerupActive = false, powerupProgress = 0,
+         scoreMult = 1.0) {
 
     const now = this.scene.time.now;
+
+    // ── Score multiplier ─────────────────────────────────
+    this.scoreText.setText(`SCORE \xd7${scoreMult.toFixed(1)}`);
+    this.scoreText.setAlpha(scoreMult > 1.05 ? 1 : 0.35);
 
     // ── Time ─────────────────────────────────────────────
     const sec = (survivalMs / 1000).toFixed(2);
@@ -114,9 +123,10 @@ export class UIManager {
     if (atCap) {
       this.echoCountdownText.setText('— MAX ECHOES —').setColor('#ff3355').setAlpha(0.9);
     } else {
-      const pulse = 0.7 + 0.3 * Math.sin(now / 200);
-      const col   = timeUntilNextSpawnMs < 3000 ? '#ff3355' : '#ff8c00';
-      this.echoCountdownText.setText(`ECHO #${nextGhostNumber} IN ${(timeUntilNextSpawnMs / 1000).toFixed(1)}s`).setColor(col).setAlpha(pulse);
+      const col = timeUntilNextSpawnMs < 3000
+        ? (Math.floor(now / 250) % 2 === 0 ? '#ff3355' : '#ff8c00')
+        : '#ff8c00';
+      this.echoCountdownText.setText(`ECHO #${nextGhostNumber} IN ${(timeUntilNextSpawnMs / 1000).toFixed(1)}s`).setColor(col).setAlpha(1);
     }
 
     // ── Overdrive ──────────────────────────────────────────
@@ -138,6 +148,8 @@ export class UIManager {
       this.nerveText.setColor(nerveMultiplier > 2.5 ? '#ff3355' : '#ff8c00');
     }
 
+    this.nerveSubLabel.setAlpha(nerveMultiplier <= 1.05 ? 0.7 : 0);
+
     this.nerveBar.clear();
     if (nerveProgress > 0.01) {
       const barW = 100;
@@ -153,7 +165,7 @@ export class UIManager {
     // ── Powerup HUD (bottom-left) ─────────────────────────
     if (heldPowerup && !powerupActive) {
       const colorMap = { clash: CONFIG.COLOR_CLASH, phase: CONFIG.COLOR_PHASE, decoy: CONFIG.COLOR_DECOY };
-      const iconMap  = { clash: '💀 CLASH', phase: '🛡 PHASE', decoy: '👁 DECOY' };
+      const iconMap  = { clash: '[C] CLASH', phase: '[P] PHASE', decoy: '[D] DECOY' };
       const bpCol = colorMap[heldPowerup] || CONFIG.COLOR_CYAN;
       const icon  = iconMap[heldPowerup]  || heldPowerup.toUpperCase();
       this.powerupText.setText(icon).setColor(bpCol).setAlpha(0.9 + 0.1 * Math.sin(now / 200));
@@ -195,8 +207,8 @@ export class UIManager {
   }
 
   destroy() {
-    [this.timeText, this.ghostText, this.echoCountdownText, this.overdriveText,
-     this.nerveText, this.nerveBar, this.powerupLabel, this.powerupText,
+    [this.timeText, this.ghostText, this.scoreText, this.echoCountdownText, this.overdriveText,
+     this.nerveText, this.nerveBar, this.nerveSubLabel, this.powerupLabel, this.powerupText,
      this.powerupBar, this.powerupKeyHint, this.warpStatusText, this.warpLabel,
      this._warpRingGfx, this._panelTL, this._panelTC, this._panelTR,
      this._panelBP, this._panelBR].forEach(o => o?.destroy());
