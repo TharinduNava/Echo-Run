@@ -1,4 +1,4 @@
-import { CONFIG } from '../config/GameConfig.js';
+import { CONFIG, POWERUP_INFO } from '../config/GameConfig.js';
 
 export class Powerup {
   constructor(scene, type, x, y) {
@@ -10,11 +10,11 @@ export class Powerup {
     this._phase = Math.random() * Math.PI * 2;
     this._gfx   = scene.add.graphics().setDepth(8);
 
-    const labelMap = { clash: '💀 CLASH', phase: '🛡 PHASE', decoy: '👁 DECOY' };
-    const colorMap = { clash: CONFIG.COLOR_CLASH, phase: CONFIG.COLOR_PHASE, decoy: CONFIG.COLOR_DECOY };
-    this._label = scene.add.text(x, y - 26, labelMap[type] || type.toUpperCase(), {
-      fontFamily: 'Orbitron, monospace', fontSize: '9px',
-      color: colorMap[type] || CONFIG.COLOR_CYAN,
+    const info = POWERUP_INFO[type];
+    this._label = scene.add.text(x, y - 28, info ? info.label : type.toUpperCase(), {
+      fontFamily: 'Orbitron, monospace', fontSize: '10px',
+      color: info ? info.color : CONFIG.COLOR_CYAN,
+      stroke: '#000000', strokeThickness: 3,
       align: 'center'
     }).setOrigin(0.5).setDepth(9).setAlpha(0);
     scene.tweens.add({ targets: this._label, alpha: 1, duration: 400 });
@@ -30,11 +30,16 @@ export class Powerup {
     const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + this._phase);
     const spin  = now * 0.002;
 
-    const colorMap = { clash: 0xff6600, phase: 0x00ccff, decoy: 0x00ff88 };
-    const col  = colorMap[this.type] || 0x00f5ff;
+    const col  = POWERUP_INFO[this.type]?.hex ?? 0x00f5ff;
     const size = 11;
     const g    = this._gfx;
     g.clear();
+
+    // Blink during the last 3s before it despawns
+    const remaining = this._despawnTimer.getRemaining();
+    const blink = remaining < 3000 ? (Math.floor(now / (remaining < 1200 ? 90 : 180)) % 2 ? 0.25 : 1) : 1;
+    g.setAlpha(blink);
+    if (remaining < 3000) this._label.setAlpha(blink);
 
     // Far glow
     g.fillStyle(col, 0.06 + pulse * 0.06);
@@ -82,12 +87,15 @@ export class Powerup {
     g.strokeCircle(this.x, this.y, 16 + pulse * 3);
   }
 
-  overlaps(px, py, radius = 22) {
+  overlaps(px, py, radius = CONFIG.POWERUP_PICKUP_RADIUS) {
     return Math.hypot(px - this.x, py - this.y) < radius;
   }
 
   _fadeOut() {
+    if (!this.alive) return;
     this.alive = false;
+    this._despawnTimer?.remove(false);
+    this.scene.tweens.killTweensOf(this._label);
     this.scene.tweens.add({
       targets: [this._gfx, this._label], alpha: 0, duration: 500,
       onComplete: () => { this._gfx.destroy(); this._label.destroy(); }
@@ -95,12 +103,19 @@ export class Powerup {
   }
 
   collect() {
-    this._despawnTimer.remove();
+    if (!this.alive) return;
+    // Pickup burst
+    const ring = this.scene.add.graphics({ x: this.x, y: this.y }).setDepth(9);
+    ring.lineStyle(2, POWERUP_INFO[this.type]?.hex ?? 0xffffff, 0.9);
+    ring.strokeCircle(0, 0, 14);
+    this.scene.tweens.add({ targets: ring, scaleX: 3.5, scaleY: 3.5, alpha: 0, duration: 380, ease: 'Power2', onComplete: () => ring.destroy() });
     this._fadeOut();
   }
 
   destroy() {
-    this._despawnTimer?.remove();
+    this.alive = false;
+    this._despawnTimer?.remove(false);
+    this.scene.tweens.killTweensOf([this._gfx, this._label]);
     this._gfx.destroy();
     this._label.destroy();
   }

@@ -1,130 +1,205 @@
-import { CONFIG }         from '../config/GameConfig.js';
-import { Player }         from '../entities/Player.js';
-import { Recorder }       from '../systems/Recorder.js';
-import { GhostManager }   from '../systems/GhostManager.js';
-import { PowerupManager } from '../systems/PowerupManager.js';
-import { ScoreSystem }    from '../systems/ScoreSystem.js';
+import Phaser from 'phaser';
+import { CONFIG, POWERUP_INFO } from '../config/GameConfig.js';
+import { Player }          from '../entities/Player.js';
+import { Recorder }        from '../systems/Recorder.js';
+import { GhostManager }    from '../systems/GhostManager.js';
+import { PowerupManager }  from '../systems/PowerupManager.js';
+import { ScoreSystem }     from '../systems/ScoreSystem.js';
 import { CollisionSystem } from '../systems/CollisionSystem.js';
-import { UIManager }      from '../ui/UIManager.js';
-import { WaveAnnouncer }  from '../ui/WaveAnnouncer.js';
-import { DeathEffect }    from '../effects/DeathEffect.js';
+import { AudioManager }    from '../systems/AudioManager.js';
+import { Settings }        from '../systems/Settings.js';
+import { Leaderboard }     from '../systems/Leaderboard.js';
+import { UIManager }       from '../ui/UIManager.js';
+import { WaveAnnouncer }   from '../ui/WaveAnnouncer.js';
+import { TouchControls }   from '../ui/TouchControls.js';
+import { Button, bindButtonNav } from '../ui/Button.js';
+import { DeathEffect }     from '../effects/DeathEffect.js';
 import { ClashKillEffect } from '../effects/ClashKillEffect.js';
-import { AudioManager }   from '../systems/AudioManager.js';
+
+/**
+ * States:
+ *   PLAYING  — simulation runs
+ *   PAUSED   — pause menu; scene clock frozen
+ *   CHOOSING — milestone banner / buff choice; scene clock frozen
+ *   DYING    — death animation
+ *   DEAD     — results screen
+ * All gameplay timing (survival time, recorder, warp, combos) advances only in PLAYING.
+ */
+const S = { PLAYING: 'PLAYING', PAUSED: 'PAUSED', CHOOSING: 'CHOOSING', DYING: 'DYING', DEAD: 'DEAD' };
+
+const BUFF_BY_KEY = Object.fromEntries(CONFIG.BUFFS.map(b => [b.key, b]));
 
 export class GameScene extends Phaser.Scene {
   constructor() { super({ key: 'GameScene' }); }
 
   init(data) {
-    const diff   = (data && data.difficulty) || 'normal';
-    const preset = CONFIG.DIFFICULTIES[diff] || CONFIG.DIFFICULTIES.normal;
-    this._ghostDelay    = preset.ghostDelay;
-    this._ghostInterval = preset.ghostInterval;
-    this._difficulty    = diff;
-    // Passive buff from milestone choices: { nerveDecay, warpRecharge, clashDuration }
-    this._passiveBuff   = data && data.passiveBuff ? data.passiveBuff : null;
+    const diff = (data && data.difficulty) || Settings.get('difficulty');
+    this._difficulty = CONFIG.DIFFICULTIES[diff] ? diff : 'normal';
+    this._preset     = CONFIG.DIFFICULTIES[this._difficulty];
   }
 
   create() {
-    this.state = 'PLAYING';
+    this.state = S.PLAYING;
+    this._leaving = false;
+    this.time.paused = false;   // the clock plugin survives restarts
+    this.cameras.main.fadeIn(300, 0, 0, 0);
 
-    this.audioManager = new AudioManager();
+    this.audioManager = AudioManager.get();
+    this.audioManager.resume();
     this.input.on('pointerdown', () => this.audioManager.resume());
     this.input.keyboard.on('keydown', () => this.audioManager.resume());
 
-    // Graphics layers
-    this._bgGraphics      = this.add.graphics().setDepth(0);
-    this._perspGrid       = this.add.graphics().setDepth(1);
-    this._gridGraphics    = this.add.graphics().setDepth(2);
-    this._arenaGraphics   = this.add.graphics().setDepth(3);
+    // Static arena art is drawn once and baked into a texture
+    if (!this.textures.exists('arena-bg')) {
+      const bake = this.make.graphics({ add: false });
+      this._bgGraphics = this._perspGrid = this._gridGraphics = this._arenaGraphics = bake;
+      this._drawBackground();
+      this._drawPerspectiveGrid();
+      this._drawFlatGrid();
+      this._drawArenaFrame();
+      bake.generateTexture('arena-bg', CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+      bake.destroy();
+    }
+    this.add.image(0, 0, 'arena-bg').setOrigin(0).setDepth(0);
+
+    // Dynamic layers
     this._ambientGraphics = this.add.graphics().setDepth(4);
     this._depthGraphics   = this.add.graphics().setDepth(9);
+    this._vignetteImg     = this.add.image(0, 0, 'vignette').setOrigin(0).setDepth(34).setAlpha(0);
+    this._vignetteGfx     = this.add.graphics().setDepth(34);
     this._borderPulseGfx  = this.add.graphics().setDepth(35);
-    this._vignetteGfx     = this.add.graphics().setDepth(34);  // tension vignette
-    this._warpTintGfx     = this.add.graphics().setDepth(37);  // bullet-time desaturation overlay
+    this._warpTintGfx     = this.add.graphics().setDepth(37);
 
-    this._drawBackground();
-    this._drawPerspectiveGrid();
-    this._drawFlatGrid();
-    this._drawArenaFrame();
     this._ambientParticles = this._createAmbientParticles();
 
+    // Scene instances are reused across restarts — reset every per-run reference
     this._warpOverlay  = null;
     this._warpScanLine = null;
     this._warpGridGfx  = null;
+    this._menuSoundBtn = null;
+    this._result       = null;
+    this._floaters     = [];
 
-    this.recorder      = new Recorder();
-    this.scoreSystem   = new ScoreSystem(this);
-    this.waveAnnouncer = new WaveAnnouncer(this);
-    this.ghostManager  = new GhostManager(this, this.recorder, this.audioManager, this.waveAnnouncer, this._ghostDelay);
-    this.player        = new Player(this);
-    this.powerupManager= new PowerupManager(this, this.audioManager, this.scoreSystem);
-    this.uiManager     = new UIManager(this);
+    this.recorder       = new Recorder();
+    this.scoreSystem    = new ScoreSystem(this, this._preset.scoreMult);
+    this.waveAnnouncer  = new WaveAnnouncer(this);
+    this.ghostManager   = new GhostManager(this, this.recorder, this.audioManager, this.waveAnnouncer, this._preset);
+    this.touchControls  = new TouchControls(this);
+    this.player         = new Player(this);
+    this.powerupManager = new PowerupManager(this, this.audioManager, this.scoreSystem);
+    this.uiManager      = new UIManager(this, { touch: this.touchControls.isTouch });
 
-    // Apply passive buff from previous milestone choice
-    if (this._passiveBuff) this._applyPassiveBuff(this._passiveBuff);
+    this.touchControls.addRegion(this.uiManager.powerupRect, () => this._usePowerup());
+    this.touchControls.addRegion(this.uiManager.warpRect,    () => this._tryWarp());
 
-    this.survivalTime       = 0;
-    this.gameStartTime      = this.time.now;
-    this._lastMoveSoundTime = 0;
-    this._lastWarnSoundTime = 0;
-    this._moveSoundInterval = 80;
-    this._warnSoundInterval = 500;
+    this._buildTopBar();
 
-    this._milestones = [CONFIG.MILESTONE_1, CONFIG.MILESTONE_2, CONFIG.MILESTONE_3];
-    this._milestonesHit = new Set();
+    this.survivalTime  = 0;
+    this._milestoneIdx = 0;
+    this._buffs        = new Set();
 
-    // Near-miss tracking
+    this._warp = { state: 'ready', left: 0, total: CONFIG.TIME_WARP_COOLDOWN };
+
+    this._lastMoveSoundAt = 0;
+    this._lastWarnSoundAt = 0;
     this._nearMissTracked = new Set();
-    this._nearMissWorkSet = new Set();
-    this._nearMissIds = new Set();
+    this._nearMissLast    = new Map();   // ghost -> survivalTime of its last near-miss
+    this._peakFlashShown  = false;
 
-    // Warp near-miss recharge tracking
-    this._warpRechargeReady = false;
+    this._menu = null;   // active overlay menu { objects, unbind }
+    this._invulnLeft = 0;
+    this.godMode = false;  // debug/test hook: disables echo collisions
 
-    this._warpUseCount = 0;
-
-    this.timeWarpAvailable   = true;
-    this.timeWarpActive      = false;
-    this._warpCooldownStart  = null;
-
-    this._pauseGroup = null;
-
-    // Passive buff state (accumulated across restarts within the same run — reset on true restart)
-    this._activePBuff = null;
-
-    this.input.keyboard.on('keydown-SHIFT', () => {
-      if (this.timeWarpAvailable && !this.timeWarpActive && this.state === 'PLAYING') {
-        this.activateTimeWarp();
-      }
+    // ── Input ──────────────────────────────────────────
+    const kb = this.input.keyboard;
+    kb.addCapture(['SPACE', 'SHIFT', 'UP', 'DOWN', 'LEFT', 'RIGHT']);
+    kb.on('keydown-SHIFT', () => this._tryWarp());
+    kb.on('keydown-E',     () => this._usePowerup());
+    kb.on('keydown-ESC',   () => this._onBackKey());
+    kb.on('keydown-P',     () => this._togglePause());
+    kb.on('keydown-M',     () => this._toggleMute());
+    kb.on('keydown-SPACE', () => {
+      if (this.state === S.DEAD) this.restartGame();
+      else if (this.state === S.PAUSED) this._resume();
     });
-    this.input.keyboard.on('keydown-E', () => {
-      if (this.state !== 'PLAYING') return;
-      this.powerupManager.activate(this.ghostManager.getAllGhosts(), (ghost) => {
-        ClashKillEffect.play(this, ghost.x, ghost.y);
-        this.ghostManager.killGhost(ghost);
-        // Show clash chain text if multiple kills
-        const kills = this.powerupManager.clashKillCount;
-        if (kills >= 2) this._showFloatingText(ghost.x, ghost.y - 20, `×${kills} CHAIN!`, '#ffd700', '14px');
-      });
-    });
-    this.input.keyboard.on('keydown-ESC', () => {
-      if (this.state === 'PLAYING')  this._pause();
-      else if (this.state === 'PAUSED') this._resume();
-    });
-    this.input.keyboard.on('keydown-SPACE', () => {
-      if (this.state === 'DEAD') this.restartGame();
-      else if (this.state === 'PAUSED') this._resume();
-    });
-    this.input.on('pointerdown', () => {
-      if (this.state === 'DEAD') this.restartGame();
-    });
+    kb.on('keydown-R', () => { if (this.state === S.PAUSED || this.state === S.DEAD) this.restartGame(); });
+    kb.on('keydown-Q', () => { if (this.state === S.PAUSED || this.state === S.DEAD) this._quitToMenu(); });
 
+    // Auto-pause when the window loses focus or the tab is hidden
+    this.game.events.on(Phaser.Core.Events.BLUR, this._onBlur, this);
+    this.game.events.on(Phaser.Core.Events.HIDDEN, this._onBlur, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this._onShutdown, this);
+
+    this._showIntroHint();
     this.time.delayedCall(500, () => this.audioManager.startAdaptiveBg());
   }
 
-  _applyPassiveBuff(buff) {
-    this._activePBuff = buff;
-    // Buff effects applied at runtime in update / activateTimeWarp
+  _onShutdown() {
+    this.game.events.off(Phaser.Core.Events.BLUR, this._onBlur, this);
+    this.game.events.off(Phaser.Core.Events.HIDDEN, this._onBlur, this);
+    this.touchControls.destroy();
+    this.audioManager.stopAdaptiveBg();
+    this.audioManager.setMusicPaused(false);
+    this.time.paused = false;
+  }
+
+  _onBlur() { if (this.state === S.PLAYING) this._pause(); }
+
+  _onBackKey() {
+    if (this.state === S.PLAYING) this._pause();
+    else if (this.state === S.PAUSED) this._resume();
+    else if (this.state === S.DEAD) this._quitToMenu();
+  }
+
+  _togglePause() {
+    if (this.state === S.PLAYING) this._pause();
+    else if (this.state === S.PAUSED) this._resume();
+  }
+
+  _toggleMute() {
+    const muted = this.audioManager.toggleMute();
+    this._soundBtn?.setLabel(muted ? 'SOUND OFF' : 'SOUND ON');
+    this._menuSoundBtn?.setLabel(muted ? 'SOUND: OFF' : 'SOUND: ON');
+  }
+
+  // ================================================================= TOP BAR
+  _buildTopBar() {
+    const p = CONFIG.ARENA_PADDING, W = CONFIG.CANVAS_WIDTH, y = p / 2;
+    this.add.text(p, y, `ECHO RUN  //  ${this._preset.label}`, {
+      fontFamily: 'Orbitron, monospace', fontSize: '10px', color: '#5a7090',
+    }).setOrigin(0, 0.5).setDepth(60);
+
+    this._pauseBtn = new Button(this, W - p - 45, y, 'II  PAUSE', {
+      width: 90, height: 26, fontSize: '10px', depth: 60, color: '#7b94b5',
+      onClick: () => this._togglePause(),
+    });
+    this._soundBtn = new Button(this, W - p - 150, y, Settings.get('muted') ? 'SOUND OFF' : 'SOUND ON', {
+      width: 104, height: 26, fontSize: '10px', depth: 60, color: '#7b94b5',
+      onClick: () => this._toggleMute(),
+    });
+  }
+
+  _showIntroHint() {
+    const cx = CONFIG.CANVAS_WIDTH / 2, cy = CONFIG.CANVAS_HEIGHT / 2;
+    const lines = [
+      'YOUR PATH IS BEING RECORDED',
+      `ECHO #1 WILL REPLAY IT IN ${Math.round(this._preset.ghostDelay / 1000)}s`,
+      this.touchControls.isTouch ? 'DRAG ANYWHERE OR USE WASD / ARROWS TO MOVE' : 'WASD / ARROWS TO MOVE',
+    ];
+    lines.forEach((line, i) => {
+      const t = this.add.text(cx, cy + 70 + i * 20, line, {
+        fontFamily: i === 0 ? 'Orbitron, monospace' : 'Share Tech Mono, monospace',
+        fontSize: i === 0 ? '13px' : '12px',
+        color: i === 0 ? CONFIG.COLOR_CYAN : '#8899bb',
+        stroke: '#000000', strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(60).setAlpha(0);
+      this.tweens.add({
+        targets: t, alpha: 1, delay: 300 + i * 250, duration: 300,
+        onComplete: () => this.tweens.add({
+          targets: t, alpha: 0, delay: 3200 - i * 250, duration: 500, onComplete: () => t.destroy(),
+        }),
+      });
+    });
   }
 
   // ================================================================= BACKGROUND
@@ -215,17 +290,17 @@ export class GameScene extends Phaser.Scene {
     }));
   }
 
-  _updateAmbientParticles() {
+  _updateAmbientParticles(dt) {
     const p=CONFIG.ARENA_PADDING+6, W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
-    const g=this._ambientGraphics, now=this.time.now;
+    const g=this._ambientGraphics, now=this.time.now, k=dt/16;
     g.clear();
     this._ambientParticles.forEach(pt=>{
-      pt.x+=pt.vx; pt.y+=pt.vy;
+      pt.x+=pt.vx*k; pt.y+=pt.vy*k;
       if(pt.x<p)pt.x=W-p; if(pt.x>W-p)pt.x=p;
       if(pt.y<p)pt.y=H-p; if(pt.y>H-p)pt.y=p;
       const tw=0.5+0.5*Math.sin(now*0.0009+pt.phase);
       g.fillStyle(pt.color,pt.alpha*tw);
-      g.fillCircle(pt.x,pt.y,pt.r);
+      g.fillRect(pt.x-pt.r,pt.y-pt.r,pt.r*2,pt.r*2);  // tiny quads: far cheaper than circles
     });
   }
 
@@ -238,24 +313,13 @@ export class GameScene extends Phaser.Scene {
   _updateVignette(tension) {
     const g = this._vignetteGfx;
     g.clear();
+    this._vignetteImg.setAlpha(tension < 0.1 ? 0 : tension * 0.75);
     if (tension < 0.1) return;
     const W = CONFIG.CANVAS_WIDTH, H = CONFIG.CANVAS_HEIGHT;
-    const cx = W / 2, cy = H / 2;
-    // Dark outer vignette
-    for (let i = 6; i >= 1; i--) {
-      const t = i / 6;
-      const alpha = tension * (1 - t) * 0.35;
-      g.fillStyle(0x000000, alpha);
-      g.fillRect(
-        cx - (W/2) * t, cy - (H/2) * t,
-        W * t, H * t
-      );
-    }
-    // Red danger tint at high tension
     if (tension > 0.5) {
       const redAlpha = (tension - 0.5) * 0.28;
       const pulse = 0.5 + 0.5 * Math.sin(this.time.now / 300);
-      g.fillStyle(0xff0000, redAlpha * (0.7 + pulse * 0.3));
+      g.fillStyle(0xff0000, Settings.flash(redAlpha * (0.7 + pulse * 0.3)));
       g.fillRect(0, 0, W, 6);
       g.fillRect(0, H - 6, W, 6);
       g.fillRect(0, 0, 6, H);
@@ -263,16 +327,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // Bullet-time warp: blue desaturation overlay during warp
   _updateWarpTint() {
     const g = this._warpTintGfx;
     g.clear();
-    if (!this.timeWarpActive) return;
+    if (this._warp.state !== 'active') return;
     const W = CONFIG.CANVAS_WIDTH, H = CONFIG.CANVAS_HEIGHT;
-    // Subtle blue-grey desaturation layer
     g.fillStyle(0x0a1a2e, 0.18);
     g.fillRect(0, 0, W, H);
-    // Blue edge glow
     g.lineStyle(8, 0x00ffcc, 0.12);
     g.strokeRect(0, 0, W, H);
   }
@@ -282,21 +343,39 @@ export class GameScene extends Phaser.Scene {
     if(!nearbyDanger) return;
     const t=(0.5+0.5*Math.sin(this.time.now/120));
     const p=CONFIG.ARENA_PADDING, W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
-    g.lineStyle(8,0xff3355,t*0.18);
+    g.lineStyle(8,0xff3355,Settings.flash(t*0.18));
     g.strokeRect(p,p,W-p*2,H-p*2);
     g.lineStyle(3,0xff8c00,t*0.35);
     g.strokeRect(p,p,W-p*2,H-p*2);
   }
 
+  _screenFlash(color, alpha, duration, depth = 88, delay = 0) {
+    const a = Settings.flash(alpha);
+    if (a < 0.01) return;
+    const W = CONFIG.CANVAS_WIDTH, H = CONFIG.CANVAS_HEIGHT;
+    const r = this.add.rectangle(W / 2, H / 2, W, H, color).setAlpha(0).setDepth(depth);
+    this.tweens.add({ targets: r, alpha: { from: a, to: 0 }, delay, duration, ease: 'Power2', onComplete: () => r.destroy() });
+  }
+
   // =============================================================== FLOATING TEXT
   _showFloatingText(x, y, text, color = '#ffffff', fontSize = '12px') {
     const pad = CONFIG.ARENA_PADDING;
-    const cx  = Phaser.Math.Clamp(x, pad + 40, CONFIG.CANVAS_WIDTH  - pad - 40);
-    const cy  = Phaser.Math.Clamp(y, pad + 20, CONFIG.CANVAS_HEIGHT - pad - 60);
+    const cx  = Phaser.Math.Clamp(x, pad + 90, CONFIG.CANVAS_WIDTH  - pad - 90);
+    let   cy  = Phaser.Math.Clamp(y, pad + 80, CONFIG.CANVAS_HEIGHT - pad - 80);
+
+    // Stack instead of overlapping texts that are still near their start position
+    this._floaters = (this._floaters || []).filter(f => f.active && f.alpha > 0.4);
+    for (let guard = 0; guard < 6; guard++) {
+      const hit = this._floaters.find(f => Math.abs(f.x - cx) < 140 && Math.abs(f.y - cy) < 20);
+      if (!hit) break;
+      cy = hit.y - 22;
+    }
+
     const t = this.add.text(cx, cy, text, {
       fontFamily: 'Orbitron, monospace', fontSize, color,
       stroke: '#000000', strokeThickness: 4, align: 'center'
-    }).setOrigin(0.5).setDepth(89).setAlpha(0);
+    }).setOrigin(0.5).setDepth(89);
+    this._floaters.push(t);
     this.tweens.add({
       targets: t, alpha: { from: 1, to: 0 },
       y: { from: cy, to: cy - 50 },
@@ -305,43 +384,86 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // =============================================================== POWERUPS
+  _usePowerup() {
+    if (this.state !== S.PLAYING) return;
+    const type = this.powerupManager.activate();
+    if (!type) { this.audioManager.playEmpty(); return; }
+    const info = POWERUP_INFO[type];
+    this._showFloatingText(this.player.x, this.player.y - 34, info.label, info.color, '13px');
+  }
+
+  _clashKill(ghost) {
+    ClashKillEffect.play(this, ghost.x, ghost.y);
+    const chain = this.powerupManager.registerClashKill();
+    this.ghostManager.killGhost(ghost);
+    this._nearMissTracked.delete(ghost);
+    this._nearMissLast.delete(ghost);
+    const pts = Math.round(CONFIG.CLASH_KILL_POINTS * this._preset.scoreMult);
+    this._showFloatingText(ghost.x, ghost.y - 20, chain >= 2 ? `×${chain} CHAIN  +${pts}` : `ECHO DESTROYED  +${pts}`, '#ffd700', '13px');
+  }
+
   // =============================================================== TIME WARP
-  activateTimeWarp() {
-    this.timeWarpActive   = true;
-    this.timeWarpAvailable= false;
-    this._warpCooldownStart = null;
-    this._warpRechargeReady = false;
+  _tryWarp() {
+    if (this.state !== S.PLAYING) return;
+    if (this._warp.state !== 'ready') { this.audioManager.playEmpty(); return; }
+    this._activateTimeWarp();
+  }
+
+  _activateTimeWarp() {
+    this._warp.state = 'active';
+    this._warp.left  = CONFIG.TIME_WARP_DURATION;
     this.scoreSystem.recordWarpUse();
-    this._warpUseCount++;
+    this.audioManager.playWarp();
 
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
-    const cx=W/2, cy=H/2;
+    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
     this._triggerChromaticFlash();
-    const overlay=this.add.rectangle(cx,cy,W,H,0x000e22).setDepth(35).setAlpha(0);
-    this.tweens.add({targets:overlay,alpha:0.2,duration:250,ease:'Power2'});
-    this._warpOverlay=overlay;
-    this._warpScanLine=this.add.graphics().setDepth(36);
-    this._triggerGridRipple(cx,cy);
-    this.player._warpAura=true;
+    this._warpOverlay = this.add.rectangle(cx,cy,W,H,0x000e22).setDepth(35).setAlpha(0);
+    this.tweens.add({targets:this._warpOverlay,alpha:0.2,duration:250,ease:'Power2'});
+    this._warpScanLine = this.add.graphics().setDepth(36);
+    this._triggerGridRipple(this.player.x, this.player.y);
+    this.player._warpAura = true;
     this._showWarpBanner();
+  }
 
-    // Buff: shorter cooldown if nearMiss buff active
-    const cooldown = (this._activePBuff === 'warpRecharge')
-      ? CONFIG.TIME_WARP_COOLDOWN * 0.65
-      : CONFIG.TIME_WARP_COOLDOWN;
+  _clearWarpVisuals() {
+    this.player._warpAura = false;
+    if (this._warpOverlay) {
+      const o = this._warpOverlay; this._warpOverlay = null;
+      this.tweens.killTweensOf(o);
+      this.tweens.add({ targets: o, alpha: 0, duration: 350, onComplete: () => o.destroy() });
+    }
+    if (this._warpScanLine) { this._warpScanLine.destroy(); this._warpScanLine = null; }
+    this._warpTintGfx.clear();
+  }
 
-    this.time.delayedCall(CONFIG.TIME_WARP_DURATION,()=>{
-      this.timeWarpActive=false; this.player._warpAura=false;
-      if(this._warpOverlay){this.tweens.add({targets:this._warpOverlay,alpha:0,duration:350,onComplete:()=>{this._warpOverlay&&this._warpOverlay.destroy();this._warpOverlay=null;}});}
-      if(this._warpScanLine){this._warpScanLine.destroy();this._warpScanLine=null;}
-      if(this._warpGridGfx){this._warpGridGfx.destroy();this._warpGridGfx=null;}
-      this._warpCooldownStart=this.time.now;
-      this._warpRechargeReady = true;  // allow near-miss to speed up recharge
-      this.time.delayedCall(cooldown,()=>{
-        this.timeWarpAvailable=true; this._warpCooldownStart=null; this._warpRechargeReady=false;
+  _endTimeWarp() {
+    this._clearWarpVisuals();
+    this._warp.state = 'cooldown';
+    this._warp.total = CONFIG.TIME_WARP_COOLDOWN * (this._buffs.has('warpRecharge') ? 0.65 : 1);
+    this._warp.left  = this._warp.total;
+  }
+
+  _updateWarp(dt) {
+    const w = this._warp;
+    if (w.state === 'active') {
+      w.left -= dt;
+      if (w.left <= 0) this._endTimeWarp();
+    } else if (w.state === 'cooldown') {
+      w.left -= dt;
+      if (w.left <= 0) {
+        w.state = 'ready'; w.left = 0;
+        this.audioManager.playWarpReady();
         this._flashWarpReady();
-      });
-    });
+      }
+    }
+  }
+
+  get _warpProgress() {
+    const w = this._warp;
+    if (w.state === 'ready')  return 1;
+    if (w.state === 'active') return 0;
+    return Phaser.Math.Clamp(1 - w.left / w.total, 0, 1);
   }
 
   _updateWarpScanLines() {
@@ -362,370 +484,416 @@ export class GameScene extends Phaser.Scene {
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
     [{c:0xff0000,dx:-8,delay:0},{c:0x0044ff,dx:8,delay:45}].forEach(({c,dx,delay})=>{
       const r=this.add.rectangle(cx+dx,cy,W+20,H,c).setAlpha(0).setDepth(80).setBlendMode(Phaser.BlendModes.ADD);
-      this.tweens.add({targets:r,alpha:{from:0.28,to:0},duration:400,delay,ease:'Power3',onComplete:()=>r.destroy()});
+      this.tweens.add({targets:r,alpha:{from:Settings.flash(0.28),to:0},duration:400,delay,ease:'Power3',onComplete:()=>r.destroy()});
     });
-    const flash=this.add.rectangle(cx,cy,W,H,0xffffff).setAlpha(0.18).setDepth(82);
-    this.tweens.add({targets:flash,alpha:0,duration:180,ease:'Power3',onComplete:()=>flash.destroy()});
+    this._screenFlash(0xffffff, 0.18, 180, 82);
   }
 
   _triggerGridRipple(cx,cy) {
     if(this._warpGridGfx) this._warpGridGfx.destroy();
     const r=this.add.graphics().setDepth(6); this._warpGridGfx=r;
-    let elapsed=0;
-    const ev=this.time.addEvent({delay:16,repeat:44,callback:()=>{
-      elapsed+=16; const prog=elapsed/700;
-      const rad=20+Math.max(CONFIG.CANVAS_WIDTH,CONFIG.CANVAS_HEIGHT)*0.85*prog;
-      const alpha=0.85*(1-prog);
-      r.clear();
-      r.lineStyle(2.5,0x00ffcc,alpha); r.strokeCircle(cx,cy,rad);
-      r.lineStyle(1.5,0x00f5ff,alpha*0.5); r.strokeCircle(cx,cy,rad*0.62);
-      if(prog>=1){r.destroy();this._warpGridGfx=null;ev.destroy();}
-    }});
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 700, ease: 'Linear',
+      onUpdate: (tw) => {
+        const prog = tw.getValue();
+        const rad = 20 + Math.max(CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT) * 0.85 * prog;
+        const alpha = 0.85 * (1 - prog);
+        r.clear();
+        r.lineStyle(2.5,0x00ffcc,alpha); r.strokeCircle(cx,cy,rad);
+        r.lineStyle(1.5,0x00f5ff,alpha*0.5); r.strokeCircle(cx,cy,rad*0.62);
+      },
+      onComplete: () => { r.destroy(); if (this._warpGridGfx === r) this._warpGridGfx = null; },
+    });
   }
 
   _showWarpBanner() {
     const cx=CONFIG.CANVAS_WIDTH/2;
-    const banner=this.add.text(cx,82,'⟳  T I M E   W A R P  ⟳',{fontFamily:'Orbitron, monospace',fontSize:'17px',color:'#00ffcc',stroke:'#000000',strokeThickness:5}).setOrigin(0.5).setDepth(60).setAlpha(0);
-    this.tweens.add({targets:banner,alpha:1,y:{from:100,to:82},duration:210,ease:'Back.easeOut',onComplete:()=>{
-      this.tweens.add({targets:banner,alpha:0.35,duration:480,yoyo:true,repeat:Math.ceil(CONFIG.TIME_WARP_DURATION/960),ease:'Sine.easeInOut',onComplete:()=>{
-        this.tweens.add({targets:banner,alpha:0,y:62,duration:260,ease:'Power2',onComplete:()=>banner.destroy()});
-      }});
-    }});
+    const banner=this.add.text(cx,128,'<<  T I M E   W A R P  >>',{fontFamily:'Orbitron, monospace',fontSize:'17px',color:'#00ffcc',stroke:'#000000',strokeThickness:5}).setOrigin(0.5).setDepth(60).setAlpha(0);
+    this.tweens.chain({
+      targets: banner,
+      tweens: [
+        { alpha: 1, y: { from: 146, to: 128 }, duration: 210, ease: 'Back.easeOut' },
+        { alpha: 0.35, duration: 480, yoyo: true, repeat: Math.max(0, Math.ceil(CONFIG.TIME_WARP_DURATION / 960) - 1), ease: 'Sine.easeInOut' },
+        { alpha: 0, y: 108, duration: 260, ease: 'Power2' },
+      ],
+      onComplete: () => banner.destroy(),
+    });
   }
 
   _flashWarpReady() {
     const cx=CONFIG.CANVAS_WIDTH/2;
-    const t=this.add.text(cx,82,'WARP READY',{fontFamily:'Orbitron, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(60).setAlpha(0);
+    const t=this.add.text(cx,128,'WARP READY',{fontFamily:'Orbitron, monospace',fontSize:'13px',color:'#00f5ff',stroke:'#000000',strokeThickness:4}).setOrigin(0.5).setDepth(60).setAlpha(0);
     this.tweens.add({targets:t,alpha:{from:0,to:1},duration:200,yoyo:true,repeat:1,onComplete:()=>t.destroy()});
   }
 
-  // ============================================================== PAUSE
-  _pause() {
-    this.state='PAUSED';
-    this.physics && this.physics.pause();
+  // ============================================================== OVERLAY MENUS
+  _closeMenu() {
+    if (!this._menu) return;
+    this._menu.unbind?.();
+    this._menu.objects.forEach(o => o.destroy());
+    this._menu = null;
+    this._menuSoundBtn = null;
+  }
+
+  _panel(w, h, color, depth = 201) {
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const group = [];
-    const overlay=this.add.rectangle(cx,cy,W,H,0x000000).setAlpha(0.55).setDepth(200);
-    group.push(overlay);
-    const panel=this.add.graphics().setDepth(201);
-    panel.fillStyle(0x000000,0.9); panel.fillRoundedRect(cx-160,cy-120,320,250,12);
-    panel.lineStyle(2,0x00f5ff,0.5); panel.strokeRoundedRect(cx-160,cy-120,320,250,12);
-    group.push(panel);
-    const title=this.add.text(cx,cy-88,'PAUSED',{fontFamily:'Orbitron, monospace',fontSize:'24px',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(202);
-    const warpStr=this.timeWarpActive?'WARP: ACTIVE':this.timeWarpAvailable?'WARP: READY':'WARP: RECHARGING';
-    const pwStr=this.powerupManager.heldType?`HELD: ${this.powerupManager.heldType.toUpperCase()}`:'HELD: NONE';
-    const stats=this.add.text(cx,cy-30,`TIME: ${(this.survivalTime/1000).toFixed(2)}s\nECHOES: ${this.ghostManager.ghostCount}\n${warpStr}\n${pwStr}`,{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#aabbcc',align:'center'}).setOrigin(0.5).setDepth(202);
-    const hint=this.add.text(cx,cy+90,'ESC / SPACE — RESUME',{fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:'#334455'}).setOrigin(0.5).setDepth(202);
-    group.push(title,stats,hint);
-    this._pauseGroup=group;
+    const overlay = this.add.rectangle(cx, cy, W, H, 0x000000).setAlpha(0.6).setDepth(depth - 1);
+    const panel = this.add.graphics().setDepth(depth);
+    panel.fillStyle(0x000000, 0.92); panel.fillRoundedRect(cx - w/2, cy - h/2, w, h, 12);
+    panel.lineStyle(2, color, 0.6);  panel.strokeRoundedRect(cx - w/2, cy - h/2, w, h, 12);
+    return [overlay, panel];
+  }
+
+  // ============================================================== PAUSE
+  _freeze() {
+    this.time.paused = true;
+    this.touchControls.setEnabled(false);
+    this.audioManager.setMusicPaused(true);
+  }
+
+  _unfreeze() {
+    this.time.paused = false;
+    this.touchControls.setEnabled(true);
+    this.audioManager.setMusicPaused(false);
+    this.state = S.PLAYING;
+    this._invulnLeft = CONFIG.RESUME_GRACE_MS;  // never resume straight into a collision
+  }
+
+  _pause() {
+    if (this.state !== S.PLAYING) return;
+    this.state = S.PAUSED;
+    this._freeze();
+
+    const cx = CONFIG.CANVAS_WIDTH / 2, cy = CONFIG.CANVAS_HEIGHT / 2;
+    const objects = this._panel(340, 430, 0x00f5ff);
+    const title = this.add.text(cx, cy - 180, 'PAUSED', { fontFamily: 'Orbitron, monospace', fontSize: '24px', color: CONFIG.COLOR_CYAN }).setOrigin(0.5).setDepth(202);
+    const warpStr = this._warp.state === 'ready' ? 'READY' : this._warp.state === 'active' ? 'ACTIVE' : `${Math.floor(this._warpProgress * 100)}%`;
+    const held = this.powerupManager.heldType ? POWERUP_INFO[this.powerupManager.heldType].label : 'NONE';
+    const stats = this.add.text(cx, cy - 128,
+      `TIME ${(this.survivalTime/1000).toFixed(2)}s   SCORE ${Math.floor(this.scoreSystem.score).toLocaleString('en-US')}\n` +
+      `ECHOES ${this.ghostManager.ghostCount}   WARP ${warpStr}   HELD ${held}`,
+      { fontFamily: 'Share Tech Mono, monospace', fontSize: '12px', color: '#aabbcc', align: 'center', lineSpacing: 6 }).setOrigin(0.5).setDepth(202);
+    objects.push(title, stats);
+
+    const a = this.audioManager;
+    const opts = { width: 220, height: 36, depth: 203, audio: a };
+    const buttons = [
+      new Button(this, cx, cy - 62, 'RESUME',    { ...opts, onClick: () => this._resume() }),
+      new Button(this, cx, cy - 16, 'RESTART',   { ...opts, color: '#ff8c00', onClick: () => this.restartGame() }),
+      new Button(this, cx, cy + 30, Settings.get('muted') ? 'SOUND: OFF' : 'SOUND: ON', { ...opts, color: '#a8bddd', onClick: () => this._toggleMute() }),
+      new Button(this, cx, cy + 76, Settings.get('reducedFlash') ? 'FLASHING: REDUCED' : 'FLASHING: FULL', { ...opts, color: '#a8bddd', onClick: () => {
+        const reduced = Settings.toggle('reducedFlash');
+        buttons[3].setLabel(reduced ? 'FLASHING: REDUCED' : 'FLASHING: FULL');
+      } }),
+      new Button(this, cx, cy + 122, 'MAIN MENU', { ...opts, color: '#ff3355', onClick: () => this._quitToMenu() }),
+    ];
+    this._menuSoundBtn = buttons[2];
+    const hint = this.add.text(cx, cy + 180, 'ESC RESUME  ·  R RESTART  ·  M SOUND  ·  Q MENU', {
+      fontFamily: 'Share Tech Mono, monospace', fontSize: '11px', color: '#556677',
+    }).setOrigin(0.5).setDepth(202);
+    objects.push(hint, ...buttons);
+
+    this._menu = { objects, unbind: bindButtonNav(this, buttons, { audio: a }) };
   }
 
   _resume() {
-    this.state='PLAYING';
-    if(this._pauseGroup){this._pauseGroup.forEach(o=>o.destroy());this._pauseGroup=null;}
+    if (this.state !== S.PAUSED) return;
+    this._closeMenu();
+    this._unfreeze();
   }
 
   // ============================================================== MILESTONES
   _checkMilestones() {
-    this._milestones.forEach(ms=>{
-      if(this.survivalTime>=ms && !this._milestonesHit.has(ms)){
-        this._milestonesHit.add(ms);
-        this._triggerMilestone(ms);
-      }
-    });
+    const m = CONFIG.MILESTONES[this._milestoneIdx];
+    if (!m || this.survivalTime < m.ms) return false;
+    this._milestoneIdx++;
+    this._triggerMilestone(m);
+    return true;
   }
 
-  _triggerMilestone(ms) {
-    this.state = 'PAUSED';
+  _triggerMilestone(m) {
+    this.state = S.CHOOSING;
+    this._freeze();
     this.audioManager.playMilestone();
-    this.scoreSystem.applyMilestoneBonus();
+    const pts = this.scoreSystem.applyMilestoneBonus();
 
-    const labels={[CONFIG.MILESTONE_1]:'TEMPORAL ADEPT',  [CONFIG.MILESTONE_2]:'CHRONO MASTER', [CONFIG.MILESTONE_3]:'ECHO SOVEREIGN'};
-    const label=labels[ms]||'MILESTONE';
-    const cx=CONFIG.CANVAS_WIDTH/2, cy=CONFIG.CANVAS_HEIGHT/2;
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
+    const cx = CONFIG.CANVAS_WIDTH / 2, cy = CONFIG.CANVAS_HEIGHT / 2;
+    this._screenFlash(0xffd700, 0.22, 500, 73);
+    this.tweens.add({ targets: this.cameras.main, zoom: 1.018, duration: 200, yoyo: true, ease: 'Power2' });
 
-    // Gold screen flash
-    const flash=this.add.rectangle(cx,cy,W,H,0xffd700).setAlpha(0).setDepth(73);
-    this.tweens.add({targets:flash,alpha:{from:0.22,to:0},duration:500,ease:'Power2',onComplete:()=>flash.destroy()});
-
-    // Zoom pulse on arena border
-    this.cameras.main.zoomTo(1.018, 200, 'Power2', true);
-    this.time.delayedCall(200, () => this.cameras.main.zoomTo(1.0, 300, 'Power2', true));
-
-    const t=this.add.text(cx,cy,'✦ '+label+' ✦',{
-      fontFamily:'Orbitron, monospace',fontSize:'22px',color:CONFIG.COLOR_GOLD,
-      stroke:'#000000',strokeThickness:6,align:'center'
+    const title = this.add.text(cx, cy - 12, `//  ${m.label}  //`, {
+      fontFamily: 'Orbitron, monospace', fontSize: '22px', color: CONFIG.COLOR_GOLD,
+      stroke: '#000000', strokeThickness: 6, align: 'center'
     }).setOrigin(0.5).setDepth(75).setAlpha(0);
-    this.tweens.add({targets:t,alpha:1,y:{from:cy+30,to:cy},duration:400,ease:'Back.easeOut',
-      onComplete:()=>{this.time.delayedCall(1200,()=>{
-        // After label fades, show buff choice if not at last milestone
-        this.tweens.add({targets:t,alpha:0,duration:400,onComplete:()=>{
-          t.destroy();
-          this._showBuffChoice();
-        }});
-      });}
+    const sub = this.add.text(cx, cy + 20, `${Math.round(m.ms / 1000)}s SURVIVED  ·  +${pts}  ·  SCORE ×1.15`, {
+      fontFamily: 'Share Tech Mono, monospace', fontSize: '13px', color: '#ffe680',
+      stroke: '#000000', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(75).setAlpha(0);
+
+    this.tweens.chain({
+      targets: [title, sub],
+      tweens: [
+        { alpha: 1, y: '-=12', duration: 400, ease: 'Back.easeOut' },
+        { alpha: 0, delay: 1200, duration: 350 },
+      ],
+      onComplete: () => {
+        title.destroy(); sub.destroy();
+        if (this.state === S.CHOOSING) this._showBuffChoice();
+      },
     });
   }
 
-  /** Show 3 passive buff choices after each milestone */
+  /** Offer up to 3 buffs not yet taken this run. */
   _showBuffChoice() {
-    if (this.state === 'DEAD') return;
-    this.state = 'PAUSED';
+    const pool = Phaser.Utils.Array.Shuffle(CONFIG.BUFFS.filter(b => !this._buffs.has(b.key))).slice(0, 3);
+    if (!pool.length) { this._unfreeze(); return; }
 
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const buffs = [
-      { key: 'nerveDecay',    label: 'NERVE ANCHOR',  desc: 'Nerve decays 40% slower', color: '#ff8c00' },
-      { key: 'warpRecharge',  label: 'WARP SPRINT',   desc: 'Warp cooldown –35%',       color: '#00ffcc' },
-      { key: 'clashDuration', label: 'CLASH SURGE',   desc: 'Clash lasts 3s longer',    color: '#ff6600' },
-    ];
+    const cx = CONFIG.CANVAS_WIDTH / 2, cy = CONFIG.CANVAS_HEIGHT / 2;
+    const objects = this._panel(520, 290, 0xffd700);
+    objects.push(this.add.text(cx, cy - 118, 'CHOOSE A BUFF', { fontFamily: 'Orbitron, monospace', fontSize: '17px', color: '#ffd700' }).setOrigin(0.5).setDepth(202));
 
-    const group = [];
-    const overlay=this.add.rectangle(cx,cy,W,H,0x000000).setAlpha(0.7).setDepth(200);
-    group.push(overlay);
+    const choose = (key) => {
+      this.audioManager.playUiSelect();
+      this._closeMenu();
+      this._applyBuff(key);
+      this._showFloatingText(this.player.x, this.player.y - 34, BUFF_BY_KEY[key].label, BUFF_BY_KEY[key].color, '13px');
+      this._unfreeze();
+    };
 
-    const panel=this.add.graphics().setDepth(201);
-    panel.fillStyle(0x000000,0.92); panel.fillRoundedRect(cx-240,cy-130,480,270,14);
-    panel.lineStyle(2,0xffd700,0.6); panel.strokeRoundedRect(cx-240,cy-130,480,270,14);
-    group.push(panel);
-
-    const title=this.add.text(cx,cy-112,'CHOOSE YOUR BUFF',{fontFamily:'Orbitron, monospace',fontSize:'16px',color:'#ffd700'}).setOrigin(0.5).setDepth(202);
-    group.push(title);
-
-    buffs.forEach((b, i) => {
-      const bx = cx - 150 + i * 150;
-      const by = cy - 10;
+    const cards = [];
+    const spacing = 160, startX = cx - ((pool.length - 1) * spacing) / 2;
+    pool.forEach((b, i) => {
+      const bx = startX + i * spacing, by = cy + 5;
+      const col = Phaser.Display.Color.HexStringToColor(b.color).color;
       const bg = this.add.graphics().setDepth(202);
-      bg.fillStyle(0x111111, 0.9); bg.fillRoundedRect(bx - 60, by - 50, 120, 110, 8);
-      bg.lineStyle(2, Phaser.Display.Color.HexStringToColor(b.color).color, 0.7);
-      bg.strokeRoundedRect(bx - 60, by - 50, 120, 110, 8);
-      group.push(bg);
-
-      const numT = this.add.text(bx, by - 32, `[${i+1}]`, {fontFamily:'Orbitron, monospace',fontSize:'13px',color:b.color}).setOrigin(0.5).setDepth(203);
-      const lbl  = this.add.text(bx, by,      b.label,    {fontFamily:'Orbitron, monospace',fontSize:'13px',color:b.color}).setOrigin(0.5).setDepth(203);
-      const dsc  = this.add.text(bx, by + 26, b.desc,     {fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#aabbcc',align:'center',wordWrap:{width:110}}).setOrigin(0.5).setDepth(203);
-      group.push(numT, lbl, dsc);
+      const draw = (lit) => {
+        bg.clear();
+        bg.fillStyle(lit ? 0x1a1a1a : 0x0d0d0d, 0.95); bg.fillRoundedRect(bx - 70, by - 70, 140, 150, 10);
+        bg.lineStyle(lit ? 3 : 2, col, lit ? 1 : 0.6); bg.strokeRoundedRect(bx - 70, by - 70, 140, 150, 10);
+      };
+      draw(false);
+      const num = this.add.text(bx, by - 46, `[${i + 1}]`, { fontFamily: 'Orbitron, monospace', fontSize: '14px', color: b.color }).setOrigin(0.5).setDepth(203);
+      const lbl = this.add.text(bx, by - 8, b.label, { fontFamily: 'Orbitron, monospace', fontSize: '13px', color: b.color, align: 'center', wordWrap: { width: 128 } }).setOrigin(0.5).setDepth(203);
+      const dsc = this.add.text(bx, by + 34, b.desc, { fontFamily: 'Share Tech Mono, monospace', fontSize: '12px', color: '#c0ccdd', align: 'center', wordWrap: { width: 120 } }).setOrigin(0.5).setDepth(203);
+      const hit = this.add.rectangle(bx, by + 5, 140, 150, 0x000000, 0).setDepth(204).setInteractive({ useHandCursor: true });
+      hit.on('pointerover', () => { draw(true); this.audioManager.playUiMove(); });
+      hit.on('pointerout',  () => draw(false));
+      hit.on('pointerdown', () => choose(b.key));
+      cards.push({ draw, key: b.key });
+      objects.push(bg, num, lbl, dsc, hit);
     });
 
-    const cleanup = (buffKey) => {
-      group.forEach(o => o.destroy());
-      this._activePBuff = buffKey;
-      this._applyImmediateBuff(buffKey);
-      this.state = 'PLAYING';
-    };
+    objects.push(this.add.text(cx, cy + 122, 'PRESS 1-3 OR CLICK A CARD', {
+      fontFamily: 'Share Tech Mono, monospace', fontSize: '11px', color: '#667788',
+    }).setOrigin(0.5).setDepth(202));
 
-    const onKey = (buffKey) => {
-      this.input.keyboard.off('keydown-ONE',          onOne);
-      this.input.keyboard.off('keydown-TWO',          onTwo);
-      this.input.keyboard.off('keydown-THREE',        onThree);
-      this.input.keyboard.off('keydown-NUMPAD_ONE',   onOne);
-      this.input.keyboard.off('keydown-NUMPAD_TWO',   onTwo);
-      this.input.keyboard.off('keydown-NUMPAD_THREE', onThree);
-      cleanup(buffKey);
-    };
-    const onOne   = () => onKey(buffs[0].key);
-    const onTwo   = () => onKey(buffs[1].key);
-    const onThree = () => onKey(buffs[2].key);
+    const keys = ['ONE', 'TWO', 'THREE'], numpad = ['NUMPAD_ONE', 'NUMPAD_TWO', 'NUMPAD_THREE'];
+    const handlers = pool.map(b => () => choose(b.key));
+    const kb = this.input.keyboard;
+    handlers.forEach((h, i) => { kb.on(`keydown-${keys[i]}`, h); kb.on(`keydown-${numpad[i]}`, h); });
+    const unbind = () => handlers.forEach((h, i) => { kb.off(`keydown-${keys[i]}`, h); kb.off(`keydown-${numpad[i]}`, h); });
 
-    this.input.keyboard.on('keydown-ONE',          onOne);
-    this.input.keyboard.on('keydown-TWO',          onTwo);
-    this.input.keyboard.on('keydown-THREE',        onThree);
-    this.input.keyboard.on('keydown-NUMPAD_ONE',   onOne);
-    this.input.keyboard.on('keydown-NUMPAD_TWO',   onTwo);
-    this.input.keyboard.on('keydown-NUMPAD_THREE', onThree);
+    this._menu = { objects, unbind };
   }
 
-  /** Immediately apply the picked buff effect */
-  _applyImmediateBuff(buff) {
-    if (buff === 'clashDuration') {
-      this.powerupManager.setClashDurationOverride(8000);
+  _applyBuff(key) {
+    this._buffs.add(key);
+    switch (key) {
+      case 'nerveDecay':    this.scoreSystem.setNerveDecayMult(0.6); break;
+      case 'warpRecharge':
+        if (this._warp.state === 'cooldown') {
+          this._warp.left *= 0.65; this._warp.total *= 0.65;
+        }
+        break;
+      case 'clashDuration': this.powerupManager.addClashBonus(3000); break;
+      case 'phaseDuration': this.powerupManager.addPhaseBonus(2000); break;
+      case 'magnet':        this.powerupManager.enableMagnet(); break;
+      case 'zoneBoost':     this.scoreSystem.setZoneMult(3.0); break;
     }
-    // nerveDecay and warpRecharge are applied in update() / activateTimeWarp()
   }
 
   // ============================================================== MAIN UPDATE
-  update(time, delta) {
-    if(this.state!=='PLAYING') return;
+  update(time, rawDelta) {
+    if (this.state !== S.PLAYING) return;
+    const dt = Math.min(rawDelta, CONFIG.MAX_FRAME_DELTA);
 
-    const ghostMult =(this.timeWarpActive ? CONFIG.TIME_WARP_GHOST_MULT  : 1);
-    const playerMult=(this.timeWarpActive ? CONFIG.TIME_WARP_PLAYER_MULT : 1);
+    const warpActive = this._warp.state === 'active';
+    const ghostMult  = warpActive ? CONFIG.TIME_WARP_GHOST_MULT  : 1;
+    const playerMult = warpActive ? CONFIG.TIME_WARP_PLAYER_MULT : 1;
 
-    const ghostsNow = this.ghostManager.getAllGhosts();
-
-    this.player.update(delta*playerMult);
-    this.recorder.record(this.player.x, this.player.y);
-    this.ghostManager.update(ghostMult, delta);
+    this.player.update(dt * playerMult);
+    this.recorder.record(this.player.x, this.player.y, dt);
+    this.ghostManager.setLure(this.powerupManager.decoyPosition);
+    this.ghostManager.update(ghostMult, dt);
     this.powerupManager.update(this.player.x, this.player.y);
 
-    this.survivalTime=this.time.now - this.gameStartTime;
-    this._checkMilestones();
+    this.survivalTime += dt;
+    this._updateWarp(dt);
 
-    const scoreMult = this.scoreSystem.update(this.player.x, this.player.y, ghostsNow, delta);
+    const ghostsNow = this.ghostManager.getAllGhosts();
+    const scoreMult = this.scoreSystem.update(this.player.x, this.player.y, ghostsNow, dt);
 
     // Visual updates
-    this._updateAmbientParticles();
+    this._updateAmbientParticles(dt);
     this._drawEntityShadows();
-    if(this.timeWarpActive) this._updateWarpScanLines();
+    if (this._warp.state === 'active') this._updateWarpScanLines();
 
-    // Tension level
-    const tension=Math.min(1, this.ghostManager.ghostCount / CONFIG.MAX_GHOSTS);
+    const tension = Math.min(1, this.ghostManager.ghostCount / CONFIG.MAX_GHOSTS);
     this.audioManager.setTension(tension);
-
-    // Vignette scales with tension
     this._updateVignette(tension);
-
-    // Bullet-time warp tint
     this._updateWarpTint();
 
-    // Warp cooldown
-    let warpProgress=1;
-    if(!this.timeWarpAvailable && this._warpCooldownStart!==null){
-      warpProgress=Math.min(1,(this.time.now-this._warpCooldownStart)/CONFIG.TIME_WARP_COOLDOWN);
-    } else if(this.timeWarpActive){ warpProgress=0; }
+    // ── Danger proximity + near-miss ──────────────────────
+    const WARN = CONFIG.WARN_DIST, NEAR = CONFIG.NEAR_MISS_DIST + 12;
+    const inPhase = this.powerupManager.phaseActive;
+    let anyDanger = false;
+    const nextNear = new Set();
 
-    // Danger proximity + near-miss
-    const WARN_DIST=65, NEAR_MISS=CONFIG.NEAR_MISS_DIST;
-    let anyNear=false, anyDanger=false;
-    const nextNear=this._nearMissWorkSet;
-    nextNear.clear();
-
-    ghostsNow.forEach(ghost=>{
-      const dist=Math.hypot(this.player.x-ghost.x, this.player.y-ghost.y);
-      if(dist<WARN_DIST){ ghost.setDangerIntensity(1-dist/WARN_DIST); anyNear=true; anyDanger=true; }
+    for (const ghost of ghostsNow) {
+      const dist = Math.hypot(this.player.x - ghost.x, this.player.y - ghost.y);
+      if (ghost.harmful && dist < WARN) { ghost.setDangerIntensity(1 - dist / WARN); anyDanger = true; }
       else ghost.setDangerIntensity(0);
-      if(dist<NEAR_MISS+12) nextNear.add(ghost);
-    });
+      if (ghost.harmful && !inPhase && dist < NEAR) nextNear.add(ghost);
+    }
 
-    // Near-miss detection
-    this._nearMissTracked.forEach(g=>{
-      if(!nextNear.has(g) && !this._nearMissIds.has(g)){
-        this._nearMissIds.add(g);
-        const combo = this.scoreSystem.recordNearMiss();
-
-        // Closeness: how close relative to NEAR_MISS threshold
-        const dist = Math.hypot(this.player.x-g.x, this.player.y-g.y);
-        const closeness = Math.max(0, 1 - dist / (NEAR_MISS + 12));
-        this.audioManager.playNearMiss(closeness);
-
-        // Warp near-miss recharge: if warp on cooldown, shave 20% off remaining time
-        if (this._warpRechargeReady && this._warpCooldownStart !== null) {
-          const elapsed = this.time.now - this._warpCooldownStart;
-          const newElapsed = elapsed + CONFIG.TIME_WARP_COOLDOWN * 0.2;
-          this._warpCooldownStart = this.time.now - Math.min(newElapsed, CONFIG.TIME_WARP_COOLDOWN);
-          this._showFloatingText(this.player.x, this.player.y - 30, 'WARP –20%', '#00ffcc', '10px');
-        }
-
-        // Floating near-miss text with combo
-        if (combo >= 2) {
-          this._showFloatingText(this.player.x, this.player.y - 30, `×${combo} DODGE!`, '#ffd700', '13px');
-        } else {
-          this._flashNearMiss(g.x, g.y);
-        }
-      }
-    });
-
-    // Swap sets
-    this._nearMissWorkSet=this._nearMissTracked;
-    this._nearMissTracked=nextNear;
-
-    const ghostSet=new Set(ghostsNow);
-    this._nearMissIds.forEach(g=>{ if(!ghostSet.has(g)) this._nearMissIds.delete(g); });
+    for (const g of this._nearMissTracked) {
+      if (nextNear.has(g) || !g.harmful) continue;
+      const last = this._nearMissLast.get(g);
+      if (last !== undefined && this.survivalTime - last < 1500) continue;
+      this._nearMissLast.set(g, this.survivalTime);
+      this._onNearMiss(g);
+    }
+    this._nearMissTracked = nextNear;
+    for (const g of this._nearMissLast.keys()) if (!g.alive) this._nearMissLast.delete(g);
 
     this._updateBorderPulse(anyDanger);
 
-    if(anyNear && this.time.now-this._lastWarnSoundTime>this._warnSoundInterval){
-      this.audioManager.playWarning(); this._lastWarnSoundTime=this.time.now;
+    if (anyDanger && time - this._lastWarnSoundAt > 500) {
+      this.audioManager.playWarning(); this._lastWarnSoundAt = time;
+    }
+    if (this.player.isMoving && time - this._lastMoveSoundAt > 80) {
+      this.audioManager.playMove(); this._lastMoveSoundAt = time;
     }
 
-    if((this.player.vx!==0||this.player.vy!==0)&&this.time.now-this._lastMoveSoundTime>this._moveSoundInterval){
-      this.audioManager.playMove(); this._lastMoveSoundTime=this.time.now;
-    }
-
-    // Update player nerve level for color shift
+    // Nerve colour shift
     const nerveLevel = (this.scoreSystem.nerveMultiplier - 1) / (CONFIG.NERVE_MAX_MULT - 1);
     this.player.nerveLevel = Phaser.Math.Clamp(nerveLevel, 0, 1);
 
-    // Peak multiplier flash text
     if (this.scoreSystem.peakActive && !this._peakFlashShown) {
       this._peakFlashShown = true;
-      this._showFloatingText(CONFIG.CANVAS_WIDTH/2, CONFIG.CANVAS_HEIGHT/2 - 40, '⚡ PEAK ×8 ⚡', '#ffd700', '16px');
+      this._showFloatingText(CONFIG.CANVAS_WIDTH/2, CONFIG.CANVAS_HEIGHT/2 - 40, 'PEAK BONUS ×2', '#ffd700', '16px');
     } else if (!this.scoreSystem.peakActive) {
       this._peakFlashShown = false;
     }
 
-    const inPhase=this.powerupManager.phaseActive;
+    this._updateHud(scoreMult);
 
-    if(!inPhase){
-      const hitGhost=CollisionSystem.check(this.player, ghostsNow);
-      if(hitGhost){
-        const clashAbsorbed=this.powerupManager.clashActive && this.powerupManager.tryClashKill(hitGhost);
-        if(!clashAbsorbed) this.onDeath(hitGhost);
+    // ── Collision ─────────────────────────────────────────
+    if (this._invulnLeft > 0) this._invulnLeft -= dt;
+    const invuln = this._invulnLeft > 0;
+    this.player.graphics.setAlpha(inPhase ? 0.45 : invuln ? (Math.floor(time / 80) % 2 ? 0.35 : 1) : 1);
+    if (!inPhase && !invuln && !this.godMode) {
+      const hitGhost = CollisionSystem.check(this.player, ghostsNow);
+      if (hitGhost) {
+        if (this.powerupManager.clashActive) this._clashKill(hitGhost);
+        else { this.onDeath(hitGhost); return; }
       }
     }
 
-    this.player.graphics.setAlpha(inPhase ? 0.45 : 1);
-
-    // UI update
-    const pwActive = this.powerupManager.activeType;
-    const pwType   = this.powerupManager.heldType;
-    const pwProg   = this.powerupManager.activeProgress;
-
-    this.uiManager.update(
-      this.survivalTime, this.ghostManager.ghostCount,
-      this.ghostManager.getTimeUntilNextSpawn(), this.ghostManager.nextGhostNumber,
-      this.ghostManager.isOverdrive,
-      this.timeWarpAvailable, this.timeWarpActive, warpProgress,
-      this.scoreSystem.nerveMultiplier, pwType, pwActive, pwProg,
-      scoreMult
-    );
+    this._checkMilestones();
   }
 
-  _flashNearMiss(gx, gy) {
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const f=this.add.rectangle(cx,cy,W,H,0xffffff).setAlpha(0.10).setDepth(88);
-    this.tweens.add({targets:f,alpha:0,duration:200,ease:'Power2',onComplete:()=>f.destroy()});
-    const tx = gx !== undefined ? gx : cx;
-    const ty = gy !== undefined ? gy - 20 : cy - 60;
-    this._showFloatingText(tx, ty, 'CLOSE CALL', '#ffffff', '12px');
+  _updateHud(scoreMult = this.scoreSystem.multiplier) {
+    this.uiManager.update({
+      survivalMs:      this.survivalTime,
+      score:           this.scoreSystem.score,
+      mult:            scoreMult,
+      ghostCount:      this.ghostManager.ghostCount,
+      nextSpawnMs:     this.ghostManager.getTimeUntilNextSpawn(),
+      nextGhostNumber: this.ghostManager.nextGhostNumber,
+      overdrive:       this.ghostManager.isOverdrive,
+      warpState:       this._warp.state,
+      warpProgress:    this._warpProgress,
+      nerve:           this.scoreSystem.nerveMultiplier,
+      held:            this.powerupManager.heldType,
+      activeType:      this.powerupManager.activeType,
+      activeProgress:  this.powerupManager.activeProgress,
+      buffs:           [...this._buffs].map(k => BUFF_BY_KEY[k].label),
+    });
+  }
+
+  _onNearMiss(g) {
+    const combo = this.scoreSystem.recordNearMiss();
+    const dist = Math.hypot(this.player.x - g.x, this.player.y - g.y);
+    const closeness = Math.max(0, 1 - dist / (CONFIG.NEAR_MISS_DIST + 12));
+    this.audioManager.playNearMiss(closeness);
+
+    // Near-misses shave time off the warp cooldown
+    if (this._warp.state === 'cooldown') {
+      this._warp.left = Math.max(0, this._warp.left - this._warp.total * CONFIG.WARP_NEAR_MISS_REFUND);
+      this._showFloatingText(this.player.x, this.player.y + 30, 'WARP -20%', '#00ffcc', '10px');
+    }
+
+    const pts = Math.round(CONFIG.NEAR_MISS_POINTS * combo * this._preset.scoreMult);
+    if (combo >= 2) {
+      this._showFloatingText(this.player.x, this.player.y - 30, `×${combo} DODGE  +${pts}`, '#ffd700', '13px');
+    } else {
+      this._screenFlash(0xffffff, 0.10, 200, 88);
+      this._showFloatingText(g.x, g.y - 20, `CLOSE CALL  +${pts}`, '#ffffff', '12px');
+    }
   }
 
   // ============================================================== DEATH
-  onDeath(ghost) {
-    if(this.state!=='PLAYING') return;
-    this.state='DYING';
+  onDeath() {
+    if (this.state !== S.PLAYING) return;
+    this.state = S.DYING;
+    this.touchControls.setEnabled(false);
     this.audioManager.playDeath(this.survivalTime);
     this.audioManager.stopAdaptiveBg();
     this.ghostManager.stop();
-    this.player.kill();
     this.powerupManager.stop();
+    this._clearWarpVisuals();
+    this._borderPulseGfx.clear();
+    this.player.kill();
+    this._pauseBtn.setVisible(false);
+    this.uiManager.showDead();
 
     DeathEffect.play(this, this.player.x, this.player.y);
-    this.ghostManager.getAllGhosts().forEach(g=>g.flashDanger());
+    this.ghostManager.getAllGhosts().forEach(g => g.flashDanger());
 
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const flash=this.add.rectangle(cx,cy,W,H,0xffffff).setAlpha(0.9).setDepth(100);
-    this.tweens.add({targets:flash,alpha:0,duration:450,ease:'Power2',onComplete:()=>flash.destroy()});
-    const red=this.add.rectangle(cx,cy,W,H,0xff0000).setAlpha(0).setDepth(99);
-    this.tweens.add({targets:red,alpha:{from:0.42,to:0},duration:650,delay:80,ease:'Power2',onComplete:()=>red.destroy()});
-    this.cameras.main.shake(CONFIG.SCREEN_SHAKE_MS, CONFIG.SCREEN_SHAKE_INT/1000);
+    this._screenFlash(0xffffff, 0.9, 450, 100);
+    this._screenFlash(0xff0000, 0.42, 650, 99, 80);
+    Settings.shake(this.cameras.main, CONFIG.SCREEN_SHAKE_MS, CONFIG.SCREEN_SHAKE_INT / 1000);
 
-    this.time.delayedCall(CONFIG.DEATH_HOLD_MS,()=>{ this.state='DEAD'; this._showDeathScreen(); });
+    // Save the run immediately so it isn't lost if the player quits during the animation
+    const score = Math.floor(this.scoreSystem.score);
+    const prevBest = Leaderboard.best(this._difficulty);
+    this._result = {
+      score,
+      prevBest,
+      ...Leaderboard.add(this._difficulty, {
+        score, time: Math.round(this.survivalTime), echoes: this.ghostManager.totalSpawned, date: Date.now(),
+      }),
+    };
+
+    this.time.delayedCall(CONFIG.DEATH_HOLD_MS, () => { this.state = S.DEAD; this._showDeathScreen(); });
   }
 
   _showDeathScreen() {
     const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
-    const pw=520, ph=400;
+    const pw=540, ph=450;
+    const r = this._result, st = this.scoreSystem.stats;
 
     const panel=this.add.graphics().setDepth(90).setAlpha(0);
     panel.fillStyle(0x000000,0.7); panel.fillRoundedRect(cx-pw/2+8,cy-ph/2+8,pw,ph,14);
-    panel.fillStyle(0x000000,0.9); panel.fillRoundedRect(cx-pw/2,cy-ph/2,pw,ph,14);
+    panel.fillStyle(0x000000,0.92); panel.fillRoundedRect(cx-pw/2,cy-ph/2,pw,ph,14);
     panel.lineStyle(1,0x2a5080,0.8); panel.strokeRoundedRect(cx-pw/2,cy-ph/2,pw,ph,14);
     panel.lineStyle(2,0xff3355,0.85); panel.strokeRoundedRect(cx-pw/2+4,cy-ph/2+4,pw-8,ph-8,11);
     this.tweens.add({targets:panel,alpha:1,duration:320,ease:'Power2'});
 
     const TARGET='ECHO TERMINATED';
-    const GLYPHS='█▓▒░▀■□▪▫◆◇';
-    const titleEl=this.add.text(cx,cy-165,TARGET,{fontFamily:'Orbitron, monospace',fontSize:'26px',color:CONFIG.COLOR_DANGER,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+    const GLYPHS='#%&@$*+=?!/\\<>';
+    const titleEl=this.add.text(cx,cy-190,TARGET,{fontFamily:'Orbitron, monospace',fontSize:'26px',color:CONFIG.COLOR_DANGER,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
     this.time.delayedCall(180,()=>{
       titleEl.setAlpha(1);
       let step=0;
@@ -737,35 +905,50 @@ export class GameScene extends Phaser.Scene {
       }});
     });
 
-    // Update leaderboard (top-10)
-    const best=parseFloat(localStorage.getItem('echorun_best')||'0');
-    const isNew=this.survivalTime>best;
-    if(isNew) localStorage.setItem('echorun_best',String(this.survivalTime));
-    let lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
-    lb.push(this.survivalTime); lb.sort((a,b)=>b-a); lb=lb.slice(0,10);
-    localStorage.setItem('echorun_lb',JSON.stringify(lb));
-    const rank=lb.indexOf(this.survivalTime)+1;
-
-    const comboText = this.scoreSystem.stats.bestCombo >= 2
-      ? `BEST COMBO: ×${this.scoreSystem.stats.bestCombo}` : '';
-
-    const stats=[
-      {t:`SURVIVED: ${(this.survivalTime/1000).toFixed(2)}s`,c:'#ffffff',s:'20px'},
-      {t:`ECHOES: ${this.ghostManager.ghostCount}  |  RANK #${rank} / 10`,c:'#a855f7',s:'14px'},
-      {t:isNew?'✦  NEW BEST  ✦':`BEST: ${(best/1000).toFixed(2)}s`,c:isNew?'#ffd700':'#556677',s:'13px'},
-      {t:`NEAR-MISSES: ${this.scoreSystem.stats.nearMisses}  ${comboText}`,c:'#ff8c00',s:'12px'},
-      {t:`WARP USED: ${this.scoreSystem.stats.warpUses}  |  CLASHES: ${this.scoreSystem.stats.clashKills}`,c:'#00f5ff',s:'12px'},
-      {t:`NERVE PEAK: ×${(this.scoreSystem.nerveMultiplier).toFixed(1)}  |  POWERUPS: ${this.scoreSystem.stats.powerupsCollected}`,c:'#aabbcc',s:'12px'},
-      {t:this._difficulty.toUpperCase(),c:'#334455',s:'10px'},
+    const fmt = (n) => n.toLocaleString('en-US');
+    const rankStr = r.rank ? `RANK #${r.rank} ON ${this._preset.label}` : `${this._preset.label} · NOT RANKED`;
+    const lines = [
+      { t: 'SCORE', c: '#667788', s: '11px', y: -148 },
+      { t: fmt(r.score), c: '#ffd700', s: '32px', y: -120, font: 'Orbitron, monospace' },
+      { t: r.newBestScore ? 'NEW BEST SCORE' : `BEST ${fmt(r.prevBest.score)}`, c: r.newBestScore ? '#ffd700' : '#667788', s: '12px', y: -88 },
+      { t: `SURVIVED ${(this.survivalTime/1000).toFixed(2)}s${r.newBestTime ? '  ·  NEW BEST TIME' : ''}`, c: '#ffffff', s: '16px', y: -56 },
+      { t: rankStr, c: '#a855f7', s: '13px', y: -28 },
+      { t: `ECHOES SPAWNED ${this.ghostManager.totalSpawned}   ·   NEAR-MISSES ${st.nearMisses}   ·   BEST COMBO ${st.bestCombo >= 2 ? `×${st.bestCombo}` : '-'}`, c: '#ff8c00', s: '12px', y: 4 },
+      { t: `WARPS ${st.warpUses}   ·   CLASH KILLS ${st.clashKills}   ·   POWERUPS ${st.powerupsCollected}`, c: '#00f5ff', s: '12px', y: 28 },
+      { t: `PEAK NERVE ×${st.peakNerve.toFixed(1)}   ·   BUFFS ${this._buffs.size}   ·   ZONE TIME ${(st.scoreZoneTimeMs/1000).toFixed(1)}s`, c: '#aabbcc', s: '12px', y: 52 },
     ];
-    stats.forEach(({t,c,s},i)=>{
-      const el=this.add.text(cx,cy-105+i*30,t,{fontFamily:'Share Tech Mono, monospace',fontSize:s,color:c,align:'center'}).setOrigin(0.5).setDepth(95).setAlpha(0);
-      this.time.delayedCall(400+i*120,()=>{this.tweens.add({targets:el,alpha:1,y:{from:cy-85+i*30,to:cy-105+i*30},duration:260,ease:'Back.easeOut'});});
+    lines.forEach(({ t, c, s, y, font }, i) => {
+      const el = this.add.text(cx, cy + y + 16, t, { fontFamily: font || 'Share Tech Mono, monospace', fontSize: s, color: c, align: 'center' }).setOrigin(0.5).setDepth(95).setAlpha(0);
+      this.tweens.add({ targets: el, alpha: 1, y: cy + y, delay: 400 + i * 90, duration: 260, ease: 'Back.easeOut' });
     });
 
-    const prompt=this.add.text(cx,cy+160,'SPACE  /  TAP TO RESTART',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#00f5ff'}).setOrigin(0.5).setDepth(95).setAlpha(0);
-    this.time.delayedCall(1100,()=>{prompt.setAlpha(1);this.tweens.add({targets:prompt,alpha:0.1,duration:680,yoyo:true,repeat:-1});});
+    const a = this.audioManager;
+    const buttons = [
+      new Button(this, cx - 100, cy + 120, 'RESTART',   { width: 170, depth: 96, audio: a, onClick: () => this.restartGame() }),
+      new Button(this, cx + 100, cy + 120, 'MAIN MENU', { width: 170, depth: 96, audio: a, color: '#a8bddd', onClick: () => this._quitToMenu() }),
+    ];
+    buttons.forEach(b => {
+      b.setAlpha(0);
+      this.tweens.add({ targets: b.parts, alpha: 1, delay: 1100, duration: 300 });
+    });
+    bindButtonNav(this, buttons, { horizontal: true, audio: a });
+
+    const prompt=this.add.text(cx,cy+178,'SPACE RESTART  ·  ESC MENU',{fontFamily:'Share Tech Mono, monospace',fontSize:'12px',color:'#556677'}).setOrigin(0.5).setDepth(95).setAlpha(0);
+    this.tweens.add({targets:prompt,alpha:1,delay:1200,duration:300});
   }
 
-  restartGame() { this.scene.restart({ difficulty: this._difficulty }); }
+  restartGame() {
+    if (this._leaving) return;
+    this._leaving = true;
+    this.scene.restart({ difficulty: this._difficulty });
+  }
+
+  _quitToMenu() {
+    if (this._leaving) return;
+    this._leaving = true;
+    this.audioManager.stopAdaptiveBg();
+    this.time.paused = false;
+    this.cameras.main.fadeOut(250, 0, 0, 0);
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => this.scene.start('MenuScene'));
+  }
 }

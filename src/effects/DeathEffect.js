@@ -1,3 +1,4 @@
+import Phaser from 'phaser';
 import { CONFIG } from '../config/GameConfig.js';
 
 export class DeathEffect {

@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#060d1a">
   <title>ECHO RUN — Your Past Is Your Enemy</title>
   <meta name="description" content="ECHO RUN — A psychological survival game where your past movements become your enemies.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="./icon.png">
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -14,6 +14,11 @@
       background: #060d1a;
       overflow: hidden;
       font-family: 'Orbitron', monospace;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
     }
     #game-container {
       width: 100%; height: 100%;
@@ -23,7 +28,6 @@
 </head>
 <body>
   <div id="game-container"></div>
-  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
-  <script type="module" src="src/main.js"></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
