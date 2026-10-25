@@ -1,10 +1,10 @@
 export class CollisionSystem {
-  // Returns the first ghost colliding with player, or null
+  // Returns the first harmful echo colliding with the player, or null
   static check(player, ghosts) {
     if (!player.alive) return null;
 
     for (const ghost of ghosts) {
-      if (!ghost.alive) continue;
+      if (!ghost.harmful) continue;  // skips materializing, expiring and dead echoes
 
       const dx = player.x - ghost.x;
       const dy = player.y - ghost.y;

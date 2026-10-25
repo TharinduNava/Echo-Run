@@ -1,4 +1,5 @@
-import { CONFIG } from '../config/GameConfig.js';
+import { CONFIG }   from '../config/GameConfig.js';
+import { Settings } from '../systems/Settings.js';
 
 /** Explosion when Clash kills an echo. */
 export class ClashKillEffect {
@@ -8,7 +9,7 @@ export class ClashKillEffect {
     const cx = W / 2, cy = H / 2;
 
     // ── Screen flash ──────────────────────────────────────
-    const flash = scene.add.rectangle(cx, cy, W, H, 0xff6600).setAlpha(0.35).setDepth(100);
+    const flash = scene.add.rectangle(cx, cy, W, H, 0xff6600).setAlpha(Settings.flash(0.35)).setDepth(100);
     scene.tweens.add({ targets: flash, alpha: 0, duration: 300, ease: 'Power2', onComplete: () => flash.destroy() });
 
     // ── Shockwave ring ─────────────────────────────────────
@@ -61,7 +62,7 @@ export class ClashKillEffect {
     }
 
     // ── Screen shake via camera ────────────────────────────
-    scene.cameras.main.shake(350, 0.012);
+    Settings.shake(scene.cameras.main, 350, 0.012);
 
     // ── Scar (fading shimmer mark on floor) ───────────────
     const scar = scene.add.graphics().setDepth(6);

@@ -10,6 +10,8 @@ Thanks for taking the time to contribute.
 
 ## Local Setup
 
+Requires Node.js 22.12+ (see `.nvmrc`).
+
 ```bash
 npm install
 npm run dev
@@ -21,12 +23,15 @@ npm run dev
 2. Create a branch: `feat/short-description` or `fix/short-description`.
 3. Make your changes with clear commit messages.
 4. Run checks:
+   - `npm test` (unit tests)
    - `npm run build`
+   - `npm run test:e2e` (end-to-end tests in headless Chrome)
 5. Open a pull request using the PR template.
 
 ## Pull Request Checklist
 
 - [ ] Code builds successfully (`npm run build`)
+- [ ] `npm test` and `npm run test:e2e` pass
 - [ ] Changes are scoped to a single concern
 - [ ] README/docs updated if behavior changed
 - [ ] No secrets, generated files, or `node_modules` committed

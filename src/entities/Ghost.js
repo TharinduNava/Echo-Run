@@ -1,73 +1,73 @@
+import Phaser from 'phaser';
 import { CONFIG } from '../config/GameConfig.js';
+import { frameIndexAt } from '../systems/Recorder.js';
 
 /**
  * Ghost uses the LIVE recorder buffer (not a snapshot).
- * It is always exactly `behindMs` milliseconds behind the current recording.
- * Tier and drift are assigned by GhostManager after construction.
+ * It starts `behindMs` milliseconds behind the current recording and replays forward.
+ * Tier, speed and slot are assigned by GhostManager after construction.
  */
 export class Ghost {
   constructor(scene, recorder, behindMs) {
     this.scene    = scene;
     this.recorder = recorder;
-    this._behindMs = behindMs;
-    this.pathIndex = 0;
-    this.alive     = true;
-    this.alpha     = 0;
-    this._dangerIntensity = 0;
+    this.alive    = true;
+    this.alpha    = 0;
+    this.radius   = CONFIG.GHOST_RADIUS;
     this.trailHistory = [];
+    this._dangerIntensity = 0;
     this._pulseAngle  = Math.random() * Math.PI * 2;
     this._eyeFlicker  = 0;
     this._warpSlowed  = false;
-    this.radius = CONFIG.GHOST_RADIUS;
 
     // Tier: 1 = normal, 2 = faster/orange, 3 = fastest/red
     this.tier = 1;
     this._speedMult = 1.0;
+    this.slot = -1;
 
     // Drift: smooth random offset from exact path for unpredictability
-    this._driftX = 0;
-    this._driftY = 0;
-    this._driftTargetX = 0;
-    this._driftTargetY = 0;
+    this._driftX = 0; this._driftY = 0;
+    this._driftTargetX = 0; this._driftTargetY = 0;
     this._driftTimer = 0;
     this._inkTimer   = 0;
-    this._expired    = false;
 
-    // Aging: how long this ghost has been alive (drives visual intensity)
-    this._age = 0;
+    // Decoy lure: blend weight toward a lure point
+    this._lureW = 0;
+    this._lureX = 0; this._lureY = 0;
+    this._lureTarget = null;
 
-    // Spawn time for ink trail
-    this.spawnTime = scene.time.now;
+    this._age       = 0;
+    this._graceLeft = CONFIG.GHOST_GRACE_MS;
+    this._expired   = false;
 
     const buf = recorder.buffer;
     if (!buf || buf.length < 2) { this.alive = false; return; }
 
     const currentRecT = buf[buf.length - 1].t;
     this._pathT = Math.max(buf[0].t, currentRecT - behindMs);
-
-    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
-      this.pathIndex++;
-    }
-
-    this.x = buf[this.pathIndex].x;
-    this.y = buf[this.pathIndex].y;
+    const f = buf[frameIndexAt(buf, this._pathT)];
+    this.x = f.x;
+    this.y = f.y;
 
     this.graphics = scene.add.graphics().setDepth(18);
-
-    scene.tweens.add({ targets: this, alpha: CONFIG.GHOST_ALPHA, duration: CONFIG.GHOST_FADE_IN_MS, ease: 'Sine.easeOut' });
-    this._doSpawnPulse();
+    // Soft glows are textured sprites — much cheaper than large tessellated circles
+    this._glowFar = scene.add.image(this.x, this.y, 'glow').setDepth(17).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0);
+    this._glowMid = scene.add.image(this.x, this.y, 'glow').setDepth(17).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0);
   }
 
-  _doSpawnPulse() {
-    const pulse = this.scene.add.graphics().setDepth(17);
-    const col = this._getTierColor();
-    pulse.lineStyle(2, col, 0.9);
-    pulse.strokeCircle(this.x, this.y, CONFIG.GHOST_RADIUS);
+  /** Called by GhostManager once tier is known so the pulse uses the right color. */
+  playSpawnPulse() {
+    const pulse = this.scene.add.graphics({ x: this.x, y: this.y }).setDepth(17);
+    pulse.lineStyle(2, this._getTierColor(), 0.9);
+    pulse.strokeCircle(0, 0, CONFIG.GHOST_RADIUS);
     this.scene.tweens.add({
       targets: pulse, scaleX: 5, scaleY: 5, alpha: 0,
       duration: 600, ease: 'Power2.Out', onComplete: () => pulse.destroy()
     });
   }
+
+  /** Can this echo kill the player right now? */
+  get harmful() { return this.alive && !this._expired && this._graceLeft <= 0; }
 
   _getTierColor() {
     if (this.tier === 3) return 0xff3355;
@@ -78,17 +78,17 @@ export class Ghost {
   _updateDrift(delta) {
     this._driftTimer -= delta;
     if (this._driftTimer <= 0) {
-      // Pick a new drift target every 1.5–3s
       const amt = CONFIG.GHOST_DRIFT_AMOUNT;
       this._driftTargetX = (Math.random() - 0.5) * 2 * amt;
       this._driftTargetY = (Math.random() - 0.5) * 2 * amt;
       this._driftTimer = 1500 + Math.random() * 1500;
     }
-    // Smooth lerp toward drift target
-    const lerpRate = 0.003 * delta;
+    const lerpRate = Math.min(1, 0.003 * delta);
     this._driftX += (this._driftTargetX - this._driftX) * lerpRate;
     this._driftY += (this._driftTargetY - this._driftY) * lerpRate;
   }
+
+  setLure(pos) { this._lureTarget = pos; }
 
   update(timeWarpMultiplier = 1, delta = 16) {
     if (!this.alive) return;
@@ -97,51 +97,52 @@ export class Ghost {
     if (!buf || buf.length < 2) return;
 
     this._warpSlowed  = timeWarpMultiplier < 0.5;
-    this._pulseAngle += 0.05;
+    this._pulseAngle += 0.003 * delta;
     this._eyeFlicker += (Math.random() - this._eyeFlicker) * 0.12;
     this._age        += delta;
+    this._graceLeft  -= delta;
 
-    if (!this._expired && this._age > CONFIG.GHOST_MAX_AGE_MS) {
+    // Fade in / expire on the gameplay clock (tweens run on wall time and ignore pauses)
+    if (this._age > CONFIG.GHOST_MAX_AGE_MS) {
       this._expired = true;
-      this.scene.tweens.add({
-        targets: this, alpha: 0, duration: 1200, ease: 'Power2',
-        onComplete: () => { this.alive = false; }
-      });
+      const k = (this._age - CONFIG.GHOST_MAX_AGE_MS) / CONFIG.GHOST_EXPIRE_FADE_MS;
+      this.alpha = CONFIG.GHOST_ALPHA * Math.max(0, 1 - k) ** 2;
+      if (k >= 1) { this.alive = false; return; }
+    } else {
+      const k = Math.min(1, this._age / CONFIG.GHOST_FADE_IN_MS);
+      this.alpha = CONFIG.GHOST_ALPHA * Math.sin(k * Math.PI / 2);
     }
 
     this._updateDrift(delta);
 
-    const safeDelta = Math.min(delta, 33);
-    // Speed multiplier from tier, but warp overrides
-    this._pathT += safeDelta * timeWarpMultiplier * this._speedMult;
-
-    const maxRecT = buf[buf.length - 1].t;
+    this._pathT += delta * timeWarpMultiplier * this._speedMult;
     const minRecT = buf[0].t;
-    if (this._pathT > maxRecT) this._pathT = maxRecT;
-    if (this._pathT < minRecT) this._pathT = minRecT;
+    const maxRecT = Math.max(minRecT, buf[buf.length - 1].t - CONFIG.GHOST_MIN_BEHIND_MS);
+    this._pathT = Phaser.Math.Clamp(this._pathT, minRecT, maxRecT);
 
-    if (this.pathIndex >= buf.length || buf[this.pathIndex].t > this._pathT) {
-      this.pathIndex = 0;
-    }
-
-    while (this.pathIndex < buf.length - 1 && buf[this.pathIndex + 1].t <= this._pathT) {
-      this.pathIndex++;
-    }
-
-    const curr  = buf[this.pathIndex];
-    const next  = buf[Math.min(this.pathIndex + 1, buf.length - 1)];
+    const idx   = frameIndexAt(buf, this._pathT);
+    const curr  = buf[idx];
+    const next  = buf[Math.min(idx + 1, buf.length - 1)];
     const span  = next.t - curr.t;
     const lerpT = span > 0 ? Phaser.Math.Clamp((this._pathT - curr.t) / span, 0, 1) : 0;
 
-    // Apply drift offset — scales to zero near player to prevent unfair hits
+    // Drift scales to zero near the player to prevent unfair hits
     const driftScale = 1 - this._dangerIntensity * 0.85;
-    this.x = Phaser.Math.Linear(curr.x, next.x, lerpT) + this._driftX * driftScale;
-    this.y = Phaser.Math.Linear(curr.y, next.y, lerpT) + this._driftY * driftScale;
+    let x = Phaser.Math.Linear(curr.x, next.x, lerpT) + this._driftX * driftScale;
+    let y = Phaser.Math.Linear(curr.y, next.y, lerpT) + this._driftY * driftScale;
 
-    // Clamp within arena
+    // Decoy lure — ease toward the lure point while active, ease back afterwards
+    const targetW = this._lureTarget ? CONFIG.DECOY_LURE_WEIGHT : 0;
+    if (this._lureTarget) { this._lureX = this._lureTarget.x; this._lureY = this._lureTarget.y; }
+    this._lureW += (targetW - this._lureW) * Math.min(1, delta * 0.0025);
+    if (this._lureW > 0.001) {
+      x = Phaser.Math.Linear(x, this._lureX, this._lureW);
+      y = Phaser.Math.Linear(y, this._lureY, this._lureW);
+    }
+
     const pad = CONFIG.ARENA_PADDING + this.radius;
-    this.x = Phaser.Math.Clamp(this.x, pad, CONFIG.CANVAS_WIDTH  - pad);
-    this.y = Phaser.Math.Clamp(this.y, pad, CONFIG.CANVAS_HEIGHT - pad);
+    this.x = Phaser.Math.Clamp(x, pad, CONFIG.CANVAS_WIDTH  - pad);
+    this.y = Phaser.Math.Clamp(y, pad, CONFIG.CANVAS_HEIGHT - pad);
 
     this.trailHistory.push({ x: this.x, y: this.y });
     if (this.trailHistory.length > CONFIG.TRAIL_LENGTH) this.trailHistory.shift();
@@ -154,74 +155,95 @@ export class Ghost {
     const g      = this.graphics;
     const danger = this._dangerIntensity || 0;
     const pulse  = 0.5 + 0.5 * Math.sin(this._pulseAngle);
-
-    // Aging factor: ghosts that have lived longer glow more intensely
     const ageFactor = Math.min(1, this._age / 20000);
-
-    // Tier-based color
     const col = this._getTierColor();
+
+    // Materializing echoes flicker and render as hollow rings
+    const materializing = this._graceLeft > 0;
+    const a = materializing
+      ? this.alpha * (0.35 + 0.25 * Math.sin(this._age * 0.04))
+      : this.alpha;
 
     // Trail — longer and brighter for higher tiers
     const tMult = this._warpSlowed ? 2.0 : 1;
     const trailBrightness = 1 + ageFactor * 0.5 + (this.tier - 1) * 0.3;
     this.trailHistory.forEach((pt, i) => {
       const prog = (i + 1) / this.trailHistory.length;
-      g.fillStyle(col, Math.min(Math.pow(prog, 1.2) * 0.4 * this.alpha * tMult * trailBrightness, 0.85));
+      g.fillStyle(col, Math.min(Math.pow(prog, 1.2) * 0.4 * a * tMult * trailBrightness, 0.85));
       g.fillCircle(pt.x, pt.y, this.radius * 0.8 * prog * tMult);
     });
 
-    // 3D drop shadow
-    g.fillStyle(0x220033, this.alpha * 0.38);
+    if (materializing) {
+      const grow = 1 - this._graceLeft / CONFIG.GHOST_GRACE_MS;
+      g.lineStyle(2, col, 0.8 * this.alpha);
+      g.strokeCircle(this.x, this.y, this.radius * (2.6 - grow * 1.6));
+      g.lineStyle(1, 0xffffff, 0.35 * this.alpha);
+      g.strokeCircle(this.x, this.y, this.radius);
+    }
+
+    // Drop shadow
+    g.fillStyle(0x220033, a * 0.38);
     g.fillEllipse(this.x + 3, this.y + 14, 26, 8);
 
     // Chromatic aberration — more intense for higher tiers
     const ca = 2.5 + danger * 3.5 + (this.tier - 1) * 1.5;
-    g.fillStyle(0xff0055, this.alpha * 0.12); g.fillCircle(this.x - ca, this.y, this.radius * 0.95);
-    g.fillStyle(0x00ccff, this.alpha * 0.12); g.fillCircle(this.x + ca, this.y, this.radius * 0.95);
+    g.fillStyle(0xff0055, a * 0.12); g.fillCircle(this.x - ca, this.y, this.radius * 0.95);
+    g.fillStyle(0x00ccff, a * 0.12); g.fillCircle(this.x + ca, this.y, this.radius * 0.95);
 
-    // Far glow — brighter with age and tier
-    const glowMult = 1 + ageFactor * 0.8 + (this.tier - 1) * 0.5;
-    g.fillStyle(col, this.alpha * (0.035 + danger * 0.05) * glowMult + pulse * 0.015);
-    g.fillCircle(this.x, this.y, 65 + danger * 35 + ageFactor * 20);
-
-    // Mid glow
-    g.fillStyle(col, this.alpha * (0.18 + danger * 0.42) * glowMult);
-    g.fillCircle(this.x, this.y, this.radius * 3.0 + danger * 8 + pulse * 2.5 + ageFactor * 4);
+    // Far + mid glow — brighter with age, tier and danger (glow texture radius = 64px)
+    const glowMult = 1 + ageFactor * 0.6 + (this.tier - 1) * 0.35;
+    const farR = 65 + danger * 35 + ageFactor * 20;
+    this._glowFar.setPosition(this.x, this.y).setTint(col).setScale(farR / 64)
+      .setAlpha(Math.min(1, a * (0.16 + danger * 0.2 + pulse * 0.04) * glowMult));
+    const midR = this.radius * 3.4 + danger * 10 + pulse * 3 + ageFactor * 4;
+    this._glowMid.setPosition(this.x, this.y).setTint(col).setScale(midR / 64)
+      .setAlpha(Math.min(1, a * (0.55 + danger * 0.45) * glowMult));
 
     // Tier 2/3: outer energy ring
     if (this.tier >= 2) {
-      const ringCol = this.tier === 3 ? 0xff3355 : 0xff8c00;
-      g.lineStyle(1.5, ringCol, 0.4 + pulse * 0.3);
+      g.lineStyle(1.5, col, (0.4 + pulse * 0.3) * (a / CONFIG.GHOST_ALPHA));
       g.strokeCircle(this.x, this.y, this.radius * 2.2 + pulse * 2);
     }
 
     // Core (3D sphere)
-    g.fillStyle(col, this.alpha);
+    g.fillStyle(col, a);
     g.fillCircle(this.x, this.y, this.radius);
-    g.fillStyle(0x220033, this.alpha * 0.5);
+    g.fillStyle(0x220033, a * 0.5);
     g.fillCircle(this.x + 2.5, this.y + 2.5, this.radius * 0.75);
-    g.fillStyle(0xffffff, this.alpha * 0.3);
+    g.fillStyle(0xffffff, a * 0.3);
     g.fillCircle(this.x - 2.5, this.y - 2.5, this.radius * 0.35);
 
     // Void eye
-    const eyeA = this.alpha * (0.4 + (danger > 0.3 ? this._eyeFlicker * 0.5 : 0));
+    const eyeA = a * (0.4 + (danger > 0.3 ? this._eyeFlicker * 0.5 : 0));
     const eyeC = danger > 0.5 ? 0xff0000 : (this.tier >= 2 ? col : 0xffffff);
     g.lineStyle(1, eyeC, eyeA * 0.8); g.strokeCircle(this.x, this.y, this.radius * 0.52);
     g.fillStyle(eyeC, eyeA);           g.fillCircle(this.x, this.y, this.radius * 0.2);
 
     // Warp shimmer
     if (this._warpSlowed) {
-      g.fillStyle(0x001888, 0.2);   g.fillCircle(this.x, this.y, this.radius * 2.4);
-      g.lineStyle(1.5, 0x0066ff, 0.55); g.strokeCircle(this.x, this.y, this.radius * 1.7);
+      g.fillStyle(0x001888, 0.2 * a);       g.fillCircle(this.x, this.y, this.radius * 2.4);
+      g.lineStyle(1.5, 0x0066ff, 0.55 * a); g.strokeCircle(this.x, this.y, this.radius * 1.7);
+    }
+
+    // Lured echoes show a faint tether toward the decoy
+    if (this._lureW > 0.05) {
+      g.lineStyle(1, 0x00ff88, 0.25 * this._lureW * a);
+      g.beginPath(); g.moveTo(this.x, this.y); g.lineTo(this._lureX, this._lureY); g.strokePath();
     }
   }
 
   setDangerIntensity(d) { this._dangerIntensity = Phaser.Math.Clamp(d, 0, 1); }
 
   flashDanger() {
-    const orig = this.alpha; this.alpha = 1; this._dangerIntensity = 1;
-    this.scene.time.delayedCall(120, () => { this.alpha = orig; this._dangerIntensity = 0; });
+    this._dangerIntensity = 1;
+    this.alpha = 1;
+    if (this.graphics) this.draw();
   }
 
-  destroy() { if (this.graphics) this.graphics.destroy(); }
+  destroy() {
+    this.alive = false;
+    if (this.graphics) { this.graphics.destroy(); this.graphics = null; }
+    this._glowFar?.destroy(); this._glowMid?.destroy();
+    this._glowFar = this._glowMid = null;
+  }
 }

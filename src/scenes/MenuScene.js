@@ -1,13 +1,29 @@
-import { CONFIG } from '../config/GameConfig.js';
+import Phaser from 'phaser';
+import { CONFIG }       from '../config/GameConfig.js';
+import { AudioManager } from '../systems/AudioManager.js';
+import { Settings }     from '../systems/Settings.js';
+import { Leaderboard }  from '../systems/Leaderboard.js';
+import { Button }       from '../ui/Button.js';
+
+const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '';
+
+const DIFF_DESC = {
+  easy:      'Echoes every 12s  ·  slower echoes  ·  score ×0.75',
+  normal:    'Echoes every 9s  ·  the intended experience  ·  score ×1.0',
+  hard:      'Echoes every 6s  ·  faster echoes  ·  score ×1.3',
+  nightmare: 'Echoes every 4s  ·  relentless  ·  score ×1.75',
+};
 
 export class MenuScene extends Phaser.Scene {
   constructor() { super({ key: 'MenuScene' }); }
 
   create() {
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT;
-    const cx=W/2, cy=H/2;
-
-    this._difficulty = localStorage.getItem('echorun_difficulty') || 'normal';
+    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2;
+    const p=CONFIG.ARENA_PADDING;
+    this._starting = false;
+    this._difficulty = Settings.get('difficulty');
+    this.audio = AudioManager.get();
+    this.cameras.main.fadeIn(300, 0, 0, 0);
 
     // ── Deep Background ─────────────────────────────────
     this.add.graphics().fillStyle(0x030912,1).fillRect(0,0,W,H);
@@ -26,139 +42,182 @@ export class MenuScene extends Phaser.Scene {
     for(let y=0;y<H;y+=60){grid.beginPath();grid.moveTo(0,y);grid.lineTo(W,y);grid.strokePath();}
 
     // ── Arena border ─────────────────────────────────────
-    const p=CONFIG.ARENA_PADDING;
     const arena=this.add.graphics().setDepth(3);
     arena.lineStyle(2,0x2a5080,1); arena.strokeRect(p,p,W-p*2,H-p*2);
 
-    // ── Corner pulse ─────────────────────────────────────
-    this._cornerGfx=this.add.graphics().setDepth(4); this._cornerPulse=0;
+    this._cornerGfx=this.add.graphics().setDepth(4);
     this._drawCorners(0);
 
-    // ── Animated ghost trails ────────────────────────────
+    // ── Animated ghost trails (decorative, kept to the arena edges) ──
     this._trailGfx=this.add.graphics().setDepth(5);
     this._trails=[
-      {pts:[{x:150,y:170},{x:310,y:130},{x:460,y:230},{x:380,y:410},{x:200,y:380},{x:150,y:250}],prog:0,spd:0.004,col:CONFIG.GHOST_COLOR},
-      {pts:[{x:610,y:160},{x:760,y:260},{x:720,y:430},{x:560,y:490},{x:470,y:360}],prog:0.5,spd:0.003,col:0x7c3aed},
-      {pts:[{x:200,y:480},{x:340,y:520},{x:500,y:480},{x:640,y:520},{x:740,y:460}],prog:0.3,spd:0.0025,col:0x5b21b6},
+      {pts:[{x:90,y:110},{x:200,y:90},{x:250,y:210},{x:160,y:330},{x:90,y:260}],prog:0,spd:0.004,col:CONFIG.GHOST_COLOR},
+      {pts:[{x:810,y:110},{x:700,y:160},{x:760,y:300},{x:820,y:420},{x:700,y:520}],prog:0.5,spd:0.003,col:0x7c3aed},
+      {pts:[{x:100,y:560},{x:180,y:440},{x:120,y:380},{x:220,y:520}],prog:0.3,spd:0.0025,col:0x5b21b6},
     ];
 
+    // ── Title ─────────────────────────────────────────────
+    this._titleY = 158;
     this._titleRingGfx=this.add.graphics().setDepth(8);
-    this._buildTitle(cx,cy);
+    this._buildTitle(cx);
 
-    // Tagline
-    this._fade(this.add.text(cx,cy+26,'"Your past is your greatest enemy."',{fontFamily:'Share Tech Mono, monospace',fontSize:'13px',color:'#8ca2c0',align:'center'}).setOrigin(0.5).setDepth(10).setAlpha(0),900);
+    this._fade(this.add.text(cx,258,'"Your past is your greatest enemy."',{fontFamily:'Share Tech Mono, monospace',fontSize:'14px',color:'#8ca2c0'}).setOrigin(0.5).setDepth(10),900);
 
-    // Controls
-    this._fade(this.add.text(cx,cy+52,'CONTROLS',{
-      fontFamily:'Orbitron, monospace',fontSize:'8px',color:'#445566',align:'center'
-    }).setOrigin(0.5).setDepth(10).setAlpha(0),1000);
-    this._fade(this.add.text(cx,cy+65,'WASD / ARROWS — MOVE     SHIFT — TIME WARP',{
-      fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#8899bb',align:'center'
-    }).setOrigin(0.5).setDepth(10).setAlpha(0),1100);
-    this._fade(this.add.text(cx,cy+82,'E — USE POWERUP     ESC — PAUSE',{
-      fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:'#8899bb',align:'center'
-    }).setOrigin(0.5).setDepth(10).setAlpha(0),1150);
+    // ── Controls ─────────────────────────────────────────
+    const touch = !!this.sys.game.device.input.touch;
+    const ctl = touch
+      ? ['DRAG TO MOVE  ·  TAP WARP / POWERUP PANELS', 'WASD / ARROWS  ·  SHIFT WARP  ·  E POWERUP  ·  ESC PAUSE']
+      : ['WASD / ARROWS — MOVE     SHIFT — TIME WARP', 'E — USE POWERUP     ESC — PAUSE     M — SOUND'];
+    ctl.forEach((line, i) => this._fade(this.add.text(cx, 286 + i * 18, line, {
+      fontFamily:'Share Tech Mono, monospace', fontSize:'12px', color:'#8899bb'
+    }).setOrigin(0.5).setDepth(10), 1000 + i * 60));
 
     // ── Difficulty selector ───────────────────────────────
-    this._diffGfx=this.add.graphics().setDepth(10);
-    this._diffTexts={};
-    const diffY=cy+110;
-    this._fade(this.add.text(cx,diffY,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1200);
-
-    const diffs=['easy','normal','hard','nightmare'];
-    const diffW=90, startX=cx-((diffs.length-1)*diffW)/2;
-    diffs.forEach((d,i)=>{
-      const bx=startX+i*diffW, by=diffY+18;
-      const lbl=CONFIG.DIFFICULTIES[d].label;
-      const btn=this.add.text(bx,by,lbl,{
-        fontFamily:'Orbitron, monospace',fontSize:'11px',
-        color:d===this._difficulty?CONFIG.COLOR_CYAN:'#7b94b5',align:'center'
-      }).setOrigin(0.5).setDepth(11).setAlpha(0).setInteractive({useHandCursor:true});
-      btn.on('pointerover',()=>{ if(d!==this._difficulty) btn.setColor('#a8bddd'); });
-      btn.on('pointerout', ()=>{ btn.setColor(d===this._difficulty?CONFIG.COLOR_CYAN:'#7b94b5'); });
-      btn.on('pointerdown',()=>{ this._setDifficulty(d); });
-      this._diffTexts[d]={text:btn,bx,by};
-      this._fade(btn,1300+i*80);
+    this._fade(this.add.text(cx,334,'DIFFICULTY',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10),1200);
+    this._diffButtons = {};
+    const order = CONFIG.DIFFICULTY_ORDER, spacing = 112;
+    const startX = cx - ((order.length - 1) * spacing) / 2;
+    order.forEach((d, i) => {
+      const btn = new Button(this, startX + i * spacing, 360, CONFIG.DIFFICULTIES[d].label, {
+        width: 104, height: 28, fontSize: '11px', depth: 11, audio: this.audio,
+        color: d === 'nightmare' ? '#ff5577' : CONFIG.COLOR_CYAN,
+        onClick: () => this._setDifficulty(d),
+      });
+      this._diffButtons[d] = btn;
+      this._fade(btn, 1300 + i * 70);
     });
-    this._setDifficulty(this._difficulty);
+    this._diffDesc = this.add.text(cx, 388, '', { fontFamily:'Share Tech Mono, monospace', fontSize:'11px', color:'#6f86a6' }).setOrigin(0.5).setDepth(10);
+    this._fade(this._diffDesc, 1500);
 
     // ── Leaderboard ───────────────────────────────────────
-    const lb=JSON.parse(localStorage.getItem('echorun_lb')||'[]');
-    if(lb.length>0){
-      // Show top-10 in two columns if 6+ entries
-      const lbY=cy+170;
-      this._fade(this.add.text(cx,lbY,'TOP SCORES',{fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10).setAlpha(0),1500);
-      const shown=lb.slice(0,10);
-      const useTwo=shown.length>5;
-      shown.forEach((score,i)=>{
-        const col=i===0?CONFIG.COLOR_GOLD:i<3?CONFIG.COLOR_CYAN:i<5?'#8899bb':'#667788';
-        const cx2=useTwo?(i<5?cx-70:cx+60):cx;
-        const row=useTwo?(i<5?i:i-5):i;
-        this._fade(this.add.text(cx2,lbY+14+row*15,`#${i+1}  ${(score/1000).toFixed(2)}s`,{
-          fontFamily:'Share Tech Mono, monospace',fontSize:'11px',color:col,align:'center'
-        }).setOrigin(0.5).setDepth(10).setAlpha(0),1600+i*80);
-      });
-      const clearBtn=this.add.text(cx,lbY+14+Math.min(shown.length,5)*15+10,'CLEAR SCORES',{
-        fontFamily:'Share Tech Mono, monospace',fontSize:'9px',color:'#334455'
-      }).setOrigin(0.5).setDepth(10).setAlpha(0).setInteractive({useHandCursor:true});
-      clearBtn.on('pointerover',()=>clearBtn.setColor('#667788'));
-      clearBtn.on('pointerout', ()=>clearBtn.setColor('#334455'));
-      clearBtn.on('pointerdown',()=>{
-        localStorage.removeItem('echorun_lb');
-        localStorage.removeItem('echorun_best');
-        this.scene.restart();
-      });
-      this._fade(clearBtn,1900);
-    }
-
-    // ── Start prompt ──────────────────────────────────────
-    const prompt=this.add.text(cx,H-p-30,'PRESS  SPACE  OR  CLICK  TO  BEGIN',{
-      fontFamily:'Share Tech Mono, monospace',fontSize:'14px',color:CONFIG.COLOR_CYAN,align:'center'
-    }).setOrigin(0.5).setDepth(10).setAlpha(0);
-    this.time.delayedCall(1800,()=>{
-      this.tweens.add({targets:prompt,alpha:1,duration:300,onComplete:()=>{
-        this.tweens.add({targets:prompt,alpha:0.1,duration:800,yoyo:true,repeat:-1,ease:'Sine.easeInOut'});
-      }});
+    this._lbTitle = this.add.text(cx, 420, '', {fontFamily:'Orbitron, monospace',fontSize:'10px',color:'#7b94b5'}).setOrigin(0.5).setDepth(10);
+    this._fade(this._lbTitle, 1500);
+    this._lbRows = Array.from({ length: 5 }, (_, i) => {
+      const t = this.add.text(cx, 440 + i * 16, '', { fontFamily:'Share Tech Mono, monospace', fontSize:'12px', color:'#8899bb' }).setOrigin(0.5).setDepth(10);
+      this._fade(t, 1600 + i * 60);
+      return t;
     });
+    this._clearBtn = this.add.text(cx, 522, '', { fontFamily:'Share Tech Mono, monospace', fontSize:'10px', color:'#556677' })
+      .setOrigin(0.5).setDepth(10).setInteractive({ useHandCursor: true });
+    this._clearBtn.on('pointerover', () => this._clearBtn.setColor('#8899aa'));
+    this._clearBtn.on('pointerout',  () => this._clearBtn.setColor(this._clearArmed ? '#ff5577' : '#556677'));
+    this._clearBtn.on('pointerdown', () => this._onClear());
+    this._fade(this._clearBtn, 1900);
+
+    // ── Start button ──────────────────────────────────────
+    this._startBtn = new Button(this, cx, 548, 'START  RUN', {
+      width: 240, height: 42, fontSize: '15px', depth: 12, audio: this.audio,
+      onClick: () => this._startGame(),
+    });
+    this._startBtn.setFocus(true);
+    this._fade(this._startBtn, 1700);
+    this._startHint = this.add.text(cx, 581, touch ? 'TAP START OR PRESS SPACE' : 'SPACE / ENTER TO BEGIN  ·  ← → DIFFICULTY', {
+      fontFamily:'Share Tech Mono, monospace', fontSize:'10px', color:'#4f6a8a'
+    }).setOrigin(0.5).setDepth(10);
+    this._fade(this._startHint, 1900);
+
+    // ── Settings row (below the arena) ────────────────────
+    const sy = H - p / 2;
+    this._soundBtn = new Button(this, cx - 90, sy, '', {
+      width: 160, height: 26, fontSize: '10px', depth: 12, audio: this.audio, color: '#7b94b5',
+      onClick: () => { this.audio.toggleMute(); this._refreshSettings(); },
+    });
+    this._flashBtn = new Button(this, cx + 90, sy, '', {
+      width: 160, height: 26, fontSize: '10px', depth: 12, audio: this.audio, color: '#7b94b5',
+      onClick: () => { Settings.toggle('reducedFlash'); this._refreshSettings(); },
+    });
+    this._refreshSettings();
+    this._fade(this._soundBtn, 2000);
+    this._fade(this._flashBtn, 2050);
+    if (VERSION) this.add.text(W - p, sy, `v${VERSION}`, { fontFamily:'Share Tech Mono, monospace', fontSize:'10px', color:'#3a5070' }).setOrigin(1, 0.5).setDepth(10);
 
     // ── Demo player ─────────────────────────────────────
     this._demoGfx=this.add.graphics().setDepth(15);
     this._demoAngle=0; this._demoTrail=[];
 
-    // Input
-    this.input.keyboard.once('keydown-SPACE',()=>this._startGame());
-    this.input.once('pointerdown',()=>this._startGame());
+    this._setDifficulty(this._difficulty, true);
+
+    // ── Input ─────────────────────────────────────────────
+    const kb = this.input.keyboard;
+    kb.on('keydown-SPACE', () => this._startGame());
+    kb.on('keydown-ENTER', () => this._startGame());
+    kb.on('keydown-LEFT',  () => this._stepDifficulty(-1));
+    kb.on('keydown-RIGHT', () => this._stepDifficulty(1));
+    kb.on('keydown-A',     () => this._stepDifficulty(-1));
+    kb.on('keydown-D',     () => this._stepDifficulty(1));
+    kb.on('keydown-M',     () => { this.audio.toggleMute(); this._refreshSettings(); });
+    this.input.on('pointerdown', () => this.audio.resume());
+    kb.on('keydown', () => this.audio.resume());
   }
 
-  _fade(obj,delay) {
-    this.time.delayedCall(delay,()=>this.tweens.add({targets:obj,alpha:1,duration:400}));
+  _fade(obj, delay) {
+    const targets = obj instanceof Button ? obj.parts : obj;
+    if (obj instanceof Button) obj.setAlpha(0); else obj.setAlpha(0);
+    this.tweens.add({ targets, alpha: 1, delay, duration: 400 });
     return obj;
   }
 
-  _setDifficulty(d) {
-    this._difficulty=d;
-    localStorage.setItem('echorun_difficulty',d);
-    Object.entries(this._diffTexts).forEach(([k,{text}])=>{
-      text.setColor(k===d?CONFIG.COLOR_CYAN:'#7b94b5');
-    });
-    this._diffGfx.clear();
-    const active=this._diffTexts[d];
-    if(active){
-      this._diffGfx.lineStyle(1.5,CONFIG.COLOR_CYAN,0.8);
-      this._diffGfx.strokeRoundedRect(active.bx-38,active.by-10,76,22,4);
-      this._diffGfx.fillStyle(CONFIG.COLOR_CYAN,0.06);
-      this._diffGfx.fillRoundedRect(active.bx-38,active.by-10,76,22,4);
-    }
+  _refreshSettings() {
+    this._soundBtn.setLabel(Settings.get('muted') ? 'SOUND: OFF' : 'SOUND: ON');
+    this._flashBtn.setLabel(Settings.get('reducedFlash') ? 'FLASHING: REDUCED' : 'FLASHING: FULL');
   }
 
-  _buildTitle(cx,cy) {
+  _stepDifficulty(dir) {
+    const order = CONFIG.DIFFICULTY_ORDER;
+    const i = order.indexOf(this._difficulty);
+    const next = order[(i + dir + order.length) % order.length];
+    this.audio.playUiMove();
+    this._setDifficulty(next);
+  }
+
+  _setDifficulty(d, silent = false) {
+    this._difficulty = d;
+    if (!silent) Settings.set('difficulty', d);
+    Object.entries(this._diffButtons).forEach(([k, b]) => b.setFocus(k === d));
+    this._diffDesc.setText(DIFF_DESC[d]);
+    this._clearArmed = false;
+    this._refreshLeaderboard();
+  }
+
+  _refreshLeaderboard() {
+    const entries = Leaderboard.top(this._difficulty, 5);
+    this._lbTitle.setText(`TOP SCORES  ·  ${CONFIG.DIFFICULTIES[this._difficulty].label}`);
+    this._lbRows.forEach((row, i) => {
+      const e = entries[i];
+      if (!e) {
+        row.setText(i === 0 ? 'NO RUNS YET — BE THE FIRST' : '').setColor('#556677');
+        return;
+      }
+      const col = i === 0 ? CONFIG.COLOR_GOLD : i < 3 ? CONFIG.COLOR_CYAN : '#8899bb';
+      const score = e.score.toLocaleString('en-US').padStart(9, ' ');
+      const time  = `${(e.time / 1000).toFixed(1)}s`.padStart(8, ' ');
+      row.setText(`#${i + 1}  ${score}  ${time}`).setColor(col);
+    });
+    this._clearBtn.setText(entries.length ? 'CLEAR SCORES' : '').setColor('#556677');
+  }
+
+  _onClear() {
+    if (!this._clearArmed) {
+      this._clearArmed = true;
+      this._clearBtn.setText('CLICK AGAIN TO CLEAR THIS BOARD').setColor('#ff5577');
+      this.time.delayedCall(3000, () => { if (this._clearArmed) { this._clearArmed = false; this._refreshLeaderboard(); } });
+      return;
+    }
+    this._clearArmed = false;
+    Leaderboard.clear(this._difficulty);
+    this.audio.playUiBack();
+    this._refreshLeaderboard();
+  }
+
+  _buildTitle(cx) {
+    const y = this._titleY;
     'ECHO'.split('').forEach((ch,i)=>{
-      const el=this.add.text(cx-112+i*75,cy-115,ch,{fontFamily:'Orbitron, monospace',fontSize:'72px',fontStyle:'bold',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(10).setAlpha(0).setY(cy-85);
-      this.time.delayedCall(200+i*120,()=>this.tweens.add({targets:el,alpha:1,y:cy-115,duration:400,ease:'Back.easeOut'}));
+      const el=this.add.text(cx-112+i*75,y-38+30,ch,{fontFamily:'Orbitron, monospace',fontSize:'72px',fontStyle:'bold',color:CONFIG.COLOR_CYAN}).setOrigin(0.5).setDepth(10).setAlpha(0);
+      this.tweens.add({targets:el,alpha:1,y:y-38,delay:200+i*120,duration:400,ease:'Back.easeOut'});
     });
     'RUN'.split('').forEach((ch,i)=>{
-      const el=this.add.text(cx-75+i*75,cy-40,ch,{fontFamily:'Orbitron, monospace',fontSize:'72px',fontStyle:'bold',color:CONFIG.COLOR_PURPLE}).setOrigin(0.5).setDepth(10).setAlpha(0).setY(cy-10);
-      this.time.delayedCall(700+i*120,()=>this.tweens.add({targets:el,alpha:1,y:cy-40,duration:400,ease:'Back.easeOut'}));
+      const el=this.add.text(cx-75+i*75,y+38+30,ch,{fontFamily:'Orbitron, monospace',fontSize:'72px',fontStyle:'bold',color:CONFIG.COLOR_PURPLE}).setOrigin(0.5).setDepth(10).setAlpha(0);
+      this.tweens.add({targets:el,alpha:1,y:y+38,delay:700+i*120,duration:400,ease:'Back.easeOut'});
     });
   }
 
@@ -174,33 +233,28 @@ export class MenuScene extends Phaser.Scene {
     });
   }
 
-  update() {
-    const now=this.time.now;
-    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, cy=H/2;
+  update(time, delta) {
+    const now=this.time.now, k=Math.min(delta, 50)/16;
+    const W=CONFIG.CANVAS_WIDTH, H=CONFIG.CANVAS_HEIGHT, cx=W/2, ty=this._titleY;
 
-    // Stars
     this._starGfx.clear();
     this._stars.forEach(s=>{
-      s.x+=s.drift; if(s.x>W)s.x=0; if(s.x<0)s.x=W;
+      s.x+=s.drift*k; if(s.x>W)s.x=0; if(s.x<0)s.x=W;
       const tw=0.5+0.5*Math.sin(now*s.sp+s.ph);
       this._starGfx.fillStyle(0xffffff,s.alpha*tw);
       this._starGfx.fillCircle(s.x,s.y,s.r);
     });
 
-    // Corners
-    this._cornerPulse=0.5+0.5*Math.sin(now/1200);
-    this._drawCorners(this._cornerPulse);
+    this._drawCorners(0.5+0.5*Math.sin(now/1200));
 
-    // Title glow ring
     this._titleRingGfx.clear();
     const rp=0.5+0.5*Math.sin(now/900);
     this._titleRingGfx.lineStyle(30,0x00f5ff,0.025+rp*0.03);
-    this._titleRingGfx.strokeEllipse(cx,cy-78,300,100);
+    this._titleRingGfx.strokeEllipse(cx,ty,320,150);
 
-    // Ghost trails
     this._trailGfx.clear();
     this._trails.forEach(tr=>{
-      tr.prog=(tr.prog+tr.spd)%1;
+      tr.prog=(tr.prog+tr.spd*k)%1;
       const pts=tr.pts, n=pts.length-1;
       const rawT=tr.prog*n, idx=Math.floor(rawT), t=rawT-idx;
       const curr=pts[idx], next=pts[Math.min(idx+1,n)];
@@ -214,9 +268,9 @@ export class MenuScene extends Phaser.Scene {
       this._trailGfx.fillStyle(0xffffff,0.25); this._trailGfx.fillCircle(hx-2,hy-2,2.5);
     });
 
-    // Demo player orbit
-    this._demoAngle+=0.018;
-    const dx=cx+Math.cos(this._demoAngle)*65, dy=cy-78+Math.sin(this._demoAngle)*65*0.45;
+    // Demo player orbiting the title
+    this._demoAngle+=0.018*k;
+    const dx=cx+Math.cos(this._demoAngle)*190, dy=ty+Math.sin(this._demoAngle)*82;
     this._demoTrail.push({x:dx,y:dy}); if(this._demoTrail.length>20) this._demoTrail.shift();
     this._demoGfx.clear();
     this._demoTrail.forEach((pt,i)=>{
@@ -230,9 +284,13 @@ export class MenuScene extends Phaser.Scene {
   }
 
   _startGame() {
+    if (this._starting) return;
+    this._starting = true;
+    this.audio.resume();
+    this.audio.playUiSelect();
     this.cameras.main.fadeOut(350,0,0,0);
-    this.cameras.main.once('camerafadeoutcomplete',()=>{
-      this.scene.start('GameScene',{difficulty:this._difficulty});
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
+      this.scene.start('GameScene', { difficulty: this._difficulty });
     });
   }
 }

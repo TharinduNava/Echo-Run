@@ -1,3 +1,4 @@
+import Phaser from 'phaser';
 import { CONFIG } from '../config/GameConfig.js';
 
 export class Player {
@@ -24,6 +25,8 @@ export class Player {
     this.maxY = CONFIG.CANVAS_HEIGHT - CONFIG.ARENA_PADDING - this.radius;
 
     this.graphics = scene.add.graphics().setDepth(20);
+    this._glowWide  = scene.add.image(this.x, this.y, 'glow').setDepth(19).setBlendMode(Phaser.BlendModes.ADD);
+    this._glowNerve = scene.add.image(this.x, this.y, 'glow').setDepth(19).setBlendMode(Phaser.BlendModes.ADD);
 
     this.keys = scene.input.keyboard.addKeys({
       up:    Phaser.Input.Keyboard.KeyCodes.UP,
@@ -51,6 +54,10 @@ export class Player {
 
     if (dx !== 0 && dy !== 0) { const l = Math.sqrt(dx*dx + dy*dy); dx /= l; dy /= l; }
 
+    // Analog touch joystick (only when no keys are held)
+    const stick = this.scene.touchControls?.vector;
+    if (dx === 0 && dy === 0 && stick) { dx = stick.x; dy = stick.y; }
+
     const targetVX = dx * CONFIG.PLAYER_SPEED;
     const targetVY = dy * CONFIG.PLAYER_SPEED;
     const accelRate = Math.min(1, 14 * dt);
@@ -61,8 +68,11 @@ export class Player {
 
     this.x = Phaser.Math.Clamp(this.x + this.vx * dt, this.minX, this.maxX);
     this.y = Phaser.Math.Clamp(this.y + this.vy * dt, this.minY, this.maxY);
+    // Kill velocity into walls so the trail/motion blur doesn't lie
+    if (this.x === this.minX || this.x === this.maxX) { this._velX = 0; this.vx = 0; }
+    if (this.y === this.minY || this.y === this.maxY) { this._velY = 0; this.vy = 0; }
 
-    this._pulseAngle += 0.065;
+    this._pulseAngle += 0.004 * delta;
     this.draw();
   }
 
@@ -134,16 +144,12 @@ export class Player {
       }
     }
 
-    // ---- ARENA ILLUMINATION ----
-    g.fillStyle(playerCol, 0.025 + glow * 0.015);
-    g.fillCircle(this.x, this.y, 100);
-
-    // ---- NERVE GLOW — expands at high nerve ----
-    const nerveGlow = 0.08 + this.nerveLevel * 0.12;
-    g.fillStyle(playerCol, nerveGlow + glow * 0.05);
-    g.fillCircle(this.x, this.y, 48 + this.nerveLevel * 20);
-    g.fillStyle(playerCol, 0.20 + this.nerveLevel * 0.15);
-    g.fillCircle(this.x, this.y, 24);
+    // ---- ARENA ILLUMINATION + NERVE GLOW (textured, additive) ----
+    const ga = this.graphics.alpha;
+    this._glowWide.setPosition(this.x, this.y).setTint(playerCol).setScale(110 / 64)
+      .setAlpha((0.14 + glow * 0.05) * ga);
+    this._glowNerve.setPosition(this.x, this.y).setTint(playerCol).setScale((44 + this.nerveLevel * 22) / 64)
+      .setAlpha((0.45 + this.nerveLevel * 0.35 + glow * 0.1) * ga);
 
     // ---- ORBIT RING ----
     const ringColor = this._warpAura ? 0x00ffcc : playerCol;
@@ -168,6 +174,14 @@ export class Player {
     g.strokeCircle(this.x, this.y, r * 0.62);
   }
 
-  kill()    { this.alive = false; this.graphics.setVisible(false); }
-  destroy() { this.graphics.destroy(); }
+  get isMoving() { return Math.hypot(this.vx, this.vy) > 20; }
+
+  kill() {
+    this.alive = false;
+    this.graphics.setVisible(false);
+    this._glowWide.setVisible(false);
+    this._glowNerve.setVisible(false);
+  }
+
+  destroy() { this.graphics.destroy(); this._glowWide.destroy(); this._glowNerve.destroy(); }
 }
